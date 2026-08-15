@@ -8,6 +8,11 @@ E-paper display showing Strava stats. Raspberry Pi Zero WH + Waveshare 7.5" e-Pa
 - microSD
 - 5V/2.5A power supply (offizielles Raspberry Pi Netzteil)
 
+## Dependencies
+- python3-requests (system package) - Strava API calls
+- python3-pil - Image rendering
+- Waveshare e-Paper library - Display driver
+
 ## Setup
 
 Flash Raspberry Pi OS Lite via Raspberry Pi Imager. Pre-configure:
@@ -16,6 +21,11 @@ Flash Raspberry Pi OS Lite via Raspberry Pi Imager. Pre-configure:
 SSH into the Pi, then:
 
 ```bash
+# Install Git
+sudo apt update
+sudo apt install -y git
+
+# Clone Repo
 git clone https://github.com/FlipTrick720/stravaDisplay.git
 cd stravaDisplay
 

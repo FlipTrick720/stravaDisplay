@@ -16,11 +16,11 @@ Flash Raspberry Pi OS Lite via Raspberry Pi Imager. Pre-configure:
 SSH into the Pi, then:
 
 ```bash
-git clone https://github.com/<your-user>/<repo>.git
-cd <repo>
+git clone https://github.com/FlipTrick720/stravaDisplay.git
+cd stravaDisplay
 ./setup/01-system.sh
 sudo reboot
-# wait 2 min, ssh back in
+# wait 10 min, ssh back in
 ./setup/02-waveshare.sh
 ./setup/03-python-deps.sh
 ```

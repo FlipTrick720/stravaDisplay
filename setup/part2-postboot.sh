@@ -33,5 +33,5 @@ python3 -c "import spidev; print('  spidev: ok')"
 
 echo ""
 echo "=============================================="
-echo "  PART 2 DONE - Bereit zum Coden"
+echo "  PART 2 DONE"
 echo "=============================================="

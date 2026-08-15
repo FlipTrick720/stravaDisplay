@@ -27,7 +27,7 @@ sync
 echo ""
 echo "=============================================="
 echo "  PART 1 DONE - REBOOT IN 10 SECONDS"
-echo "  Nach reboot: SSH rein und part2 starten"
+echo "  Nach reboot: SSH und part2 starten"
 echo "=============================================="
 sleep 10
 sudo reboot

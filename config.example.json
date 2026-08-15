@@ -1,0 +1,12 @@
+{
+  "strava": {
+    "client_id": "YOUR_CLIENT_ID",
+    "client_secret": "YOUR_CLIENT_SECRET",
+    "access_token": "",
+    "refresh_token": "",
+    "expires_at": 0
+  },
+  "display": {
+    "refresh_interval_seconds": 300
+  }
+}

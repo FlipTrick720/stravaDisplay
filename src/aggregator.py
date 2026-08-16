@@ -133,9 +133,20 @@ def _filter_dominant_cluster(polylines: list[str], cell_size_deg: float = 0.2) -
 
 
 def build_overview(activities: list[dict], year: int | None = None) -> Overview:
-    """Build overview from a list of activities (assumed YTD, newest first)."""
+    """Build overview from a list of activities.
+
+    Sorts activities newest-first internally, so caller can pass any order
+    (Strava's /activities returns DESC, /activities?after=... returns ASC).
+    """
     if not activities:
         raise ValueError("Cannot build overview from empty activities list")
+
+    # Normalize: always work with newest-first
+    activities = sorted(
+        activities,
+        key=lambda a: a["start_date"],
+        reverse=True,
+    )
 
     year = year or datetime.now().year
 

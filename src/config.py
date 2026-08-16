@@ -1,16 +1,27 @@
 """Config loader for Strava Display.
 
 Loads and saves config.json which holds Strava OAuth tokens and display settings.
-Kept intentionally simple - just a thin dict wrapper.
+
+save() uses atomic write-then-rename to prevent corruption on power loss or
+kernel kill mid-write. This matters because save() is called on every OAuth
+token refresh (~every 6h) - over months of runtime, a non-atomic write will
+eventually corrupt the file.
 """
 import json
+import os
+import tempfile
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent.parent / "config.json"
 
 
 def load() -> dict:
-    """Load config.json from repo root."""
+    """Load config.json from repo root.
+
+    Raises FileNotFoundError with a helpful message if the file is missing.
+    Raises json.JSONDecodeError if the file exists but is malformed - caller
+    should catch and handle (the file might be corrupted from a bad prior write).
+    """
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(
             f"config.json not found at {CONFIG_PATH}. "
@@ -21,13 +32,46 @@ def load() -> dict:
 
 
 def save(config: dict) -> None:
-    """Save config back to config.json (used to persist refreshed tokens)."""
-    with CONFIG_PATH.open("w") as f:
-        json.dump(config, f, indent=2)
+    """Atomically persist config back to config.json.
+
+    Strategy:
+      1. Write to a sibling temp file
+      2. fsync() so bytes are physically on disk (not just in the page cache)
+      3. os.replace() to rename atomically over the existing config
+
+    On POSIX filesystems (ext4 on the Pi), replace() is guaranteed atomic:
+    a reader will see either the old file or the new one, never a partial state.
+    """
+    target_dir = CONFIG_PATH.parent
+    # Create temp in same directory so rename is atomic (cross-fs rename isn't)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".config.",
+        suffix=".tmp",
+        dir=target_dir,
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, CONFIG_PATH)
+    except Exception:
+        # Clean up temp file if anything failed before the rename
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 if __name__ == "__main__":
-    # Smoke test
+    # Smoke test: round-trip
     cfg = load()
     print(f"Loaded config with keys: {list(cfg.keys())}")
     print(f"Strava client_id: {cfg['strava']['client_id']}")
+
+    # Test atomic save by writing back unchanged
+    save(cfg)
+    cfg2 = load()
+    assert cfg == cfg2, "Round-trip failed"
+    print("Atomic save round-trip: ok")

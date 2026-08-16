@@ -1,24 +1,15 @@
-"""Render Strava data to 800x480 images for the e-paper display.
-
-Two views:
-- render_dashboard(activity, streams): single activity (Layout A)
-- render_overview(overview, athlete_name): YTD overview per category (Layout B)
-
-All rendering is 1-bit black/white (native for Waveshare 7.5" V2).
-"""
+"""Render Strava data to 800x480 images for the e-paper display."""
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+from math import cos, radians
 import polyline as pl
 from PIL import Image, ImageDraw, ImageFont
 
-# =========================
-# Layout constants
-# =========================
+import cities
 
 WIDTH, HEIGHT = 800, 480
 
-# Latest-activity view
 MAP_WIDTH = 500
 STATS_X = MAP_WIDTH + 20
 
@@ -34,13 +25,11 @@ FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 # =========================
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Load a DejaVu font at given size."""
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     return ImageFont.truetype(f"{FONT_DIR}/{name}", size)
 
 
 def _format_duration(seconds: int) -> str:
-    """Seconds -> '1:24 h' or '45 min'."""
     if seconds >= 3600:
         h = seconds // 3600
         m = (seconds % 3600) // 60
@@ -49,13 +38,11 @@ def _format_duration(seconds: int) -> str:
 
 
 def _format_date(iso: str) -> str:
-    """ISO8601 -> '15.08.2026 · 12:34'."""
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     return dt.strftime("%d.%m.%Y · %H:%M")
 
 
 def _time_ago(iso: str) -> str:
-    """ISO8601 -> 'vor 2h' / 'vor 15 min' / 'vor 3d'."""
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     now = datetime.now(dt.tzinfo)
     delta = now - dt
@@ -72,15 +59,6 @@ def _project_polyline(
     box: tuple[int, int, int, int],
     global_bounds: tuple[float, float, float, float] | None = None,
 ) -> list[tuple[int, int]]:
-    """Project (lat, lon) points into pixel box (x0, y0, x1, y1).
-
-    Preserves aspect ratio, centers inside the box. Screen Y grows downward,
-    latitude grows northward -> flip Y.
-
-    If global_bounds (lat_min, lat_max, lon_min, lon_max) is passed, use those
-    bounds instead of computing from `points`. Useful to project many tracks
-    into the SAME coordinate system so they overlap correctly.
-    """
     points = list(points)
     if not points:
         return []
@@ -114,7 +92,6 @@ def _project_polyline(
 
 
 def _compute_global_bounds(polylines: list[str]) -> tuple[float, float, float, float] | None:
-    """Compute lat/lon bounds spanning ALL provided polylines."""
     all_lats: list[float] = []
     all_lons: list[float] = []
     for poly in polylines:
@@ -126,12 +103,105 @@ def _compute_global_bounds(polylines: list[str]) -> tuple[float, float, float, f
     return (min(all_lats), max(all_lats), min(all_lons), max(all_lons))
 
 
+def _project_point(
+    lat: float,
+    lon: float,
+    box: tuple[int, int, int, int],
+    bounds: tuple[float, float, float, float],
+) -> tuple[int, int]:
+    """Project a single (lat, lon) into the box using the given bounds."""
+    return _project_polyline([(lat, lon)], box, bounds)[0]
+
+
+# =========================
+# Map context: cities, compass, scale
+# =========================
+
+def _draw_cities(
+    img: Image.Image,
+    box: tuple[int, int, int, int],
+    bounds: tuple[float, float, float, float],
+    max_cities: int = 6,
+) -> None:
+    """Draw city labels within the given lat/lon bounds inside the box."""
+    lat_min, lat_max, lon_min, lon_max = bounds
+    in_bounds = cities.cities_in_bounds(lat_min, lat_max, lon_min, lon_max, max_cities)
+    if not in_bounds:
+        return
+
+    draw = ImageDraw.Draw(img)
+    font = _font(10)
+
+    for name, lat, lon in in_bounds:
+        x, y = _project_point(lat, lon, box, bounds)
+        # Small filled circle for the city dot
+        draw.ellipse([(x - 2, y - 2), (x + 2, y + 2)], fill=0)
+        # Label to the right, slightly offset
+        draw.text((x + 5, y - 6), name, font=font, fill=0)
+
+
+def _draw_scale_bar(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    bounds: tuple[float, float, float, float],
+) -> None:
+    """Draw a small scale bar in the bottom-left of the box.
+
+    Shows a nice round number of km based on the current zoom level.
+    """
+    x0, y0, x1, y1 = box
+    lat_min, lat_max, lon_min, lon_max = bounds
+
+    # Compute km per pixel at the middle latitude
+    mid_lat = (lat_min + lat_max) / 2
+    box_w = x1 - x0
+    lon_range = lon_max - lon_min or 1e-9
+    km_per_deg_lon = 111.0 * cos(radians(mid_lat))
+    km_per_pixel = (lon_range * km_per_deg_lon) / box_w
+
+    # Pick a nice round number of km that fits in ~15-25% of panel width
+    target_pixels = box_w * 0.2
+    target_km = target_pixels * km_per_pixel
+
+    # Snap to nice value: 1, 2, 5, 10, 20, 50, 100 km
+    for nice in [1, 2, 5, 10, 20, 50, 100, 200]:
+        if nice >= target_km:
+            bar_km = nice
+            break
+    else:
+        bar_km = 200
+
+    bar_pixels = int(bar_km / km_per_pixel)
+
+    # Position: bottom-left of box, small inset
+    bar_x = x0 + 8
+    bar_y = y1 - 10
+
+    draw.line([(bar_x, bar_y), (bar_x + bar_pixels, bar_y)], fill=0, width=2)
+    # Small ticks at ends
+    draw.line([(bar_x, bar_y - 3), (bar_x, bar_y + 3)], fill=0, width=1)
+    draw.line([(bar_x + bar_pixels, bar_y - 3), (bar_x + bar_pixels, bar_y + 3)], fill=0, width=1)
+    draw.text((bar_x + bar_pixels + 4, bar_y - 8), f"{bar_km} km", font=_font(10), fill=0)
+
+
+def _draw_compass(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+) -> None:
+    """Small N-arrow in the top-right of the box."""
+    x0, y0, x1, y1 = box
+    cx = x1 - 15
+    cy = y0 + 15
+    # Arrow: up-pointing triangle
+    draw.polygon([(cx, cy - 6), (cx - 4, cy + 4), (cx + 4, cy + 4)], fill=0)
+    draw.text((cx - 4, cy + 5), "N", font=_font(9, bold=True), fill=0)
+
+
 # =========================
 # Layout A: latest activity
 # =========================
 
 def _draw_activity_header(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    """Title + date at top."""
     title = activity["name"][:45]
     draw.text((MAP_MARGIN, 10), title, font=_font(22, bold=True), fill=0)
     draw.text((MAP_MARGIN, 36), _format_date(activity["start_date_local"]),
@@ -139,8 +209,9 @@ def _draw_activity_header(draw: ImageDraw.ImageDraw, activity: dict) -> None:
     draw.line([(0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT)], fill=0, width=1)
 
 
-def _draw_activity_track(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    """Draw single activity polyline in the left panel."""
+def _draw_activity_track(img: Image.Image, activity: dict) -> None:
+    """Draw single activity polyline in the left panel with map context."""
+    draw = ImageDraw.Draw(img)
     poly = activity.get("map", {}).get("summary_polyline")
     box = (MAP_MARGIN, HEADER_HEIGHT + MAP_MARGIN,
            MAP_WIDTH - MAP_MARGIN, HEIGHT - FOOTER_HEIGHT - MAP_MARGIN)
@@ -149,23 +220,34 @@ def _draw_activity_track(draw: ImageDraw.ImageDraw, activity: dict) -> None:
         draw.rectangle(box, outline=0, width=1)
         draw.text(
             ((box[0] + box[2]) // 2 - 60, (box[1] + box[3]) // 2 - 10),
-            "no GPS track",
-            font=_font(16),
-            fill=0,
+            "no GPS track", font=_font(16), fill=0,
         )
         return
 
     points = pl.decode(poly)
-    pixels = _project_polyline(points, box)
+    # Padded bounds so cities near track edges still show
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    pad_lat = (max(lats) - min(lats)) * 0.15 or 0.02
+    pad_lon = (max(lons) - min(lons)) * 0.15 or 0.02
+    bounds = (min(lats) - pad_lat, max(lats) + pad_lat,
+              min(lons) - pad_lon, max(lons) + pad_lon)
 
-    # Slightly thicker line via multi-pass offset
+    # Cities under the track
+    _draw_cities(img, box, bounds, max_cities=4)
+
+    # Track on top
+    pixels = _project_polyline(points, box, bounds)
     for offset in [(0, 0), (1, 0), (0, 1), (1, 1)]:
         shifted = [(x + offset[0], y + offset[1]) for x, y in pixels]
         draw.line(shifted, fill=0, width=1)
 
+    # Map context overlays
+    _draw_compass(draw, box)
+    _draw_scale_bar(draw, box, bounds)
+
 
 def _draw_activity_stats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    """Stats block on the right side."""
     stats = [
         ("DISTANZ", f"{activity['distance'] / 1000:.1f} km"),
         ("HÖHE", f"{int(activity.get('total_elevation_gain', 0))} hm"),
@@ -184,7 +266,6 @@ def _draw_elevation_profile(
     streams: dict | None,
     activity: dict,
 ) -> None:
-    """Elevation profile at the bottom (uses altitude+distance streams)."""
     y_top = HEIGHT - FOOTER_HEIGHT
     draw.line([(0, y_top), (WIDTH, y_top)], fill=0, width=1)
 
@@ -194,7 +275,6 @@ def _draw_elevation_profile(
 
     altitudes = streams["altitude"]["data"]
     distances = streams["distance"]["data"]
-
     if len(altitudes) < 2:
         return
 
@@ -210,7 +290,6 @@ def _draw_elevation_profile(
     alt_range = alt_max - alt_min or 1.0
     dist_max = distances[-1] or 1.0
 
-    # Subsample: one point per pixel column
     points = []
     for x in range(plot_w):
         target_dist = (x / plot_w) * dist_max
@@ -227,12 +306,11 @@ def _draw_elevation_profile(
 
 
 def render_dashboard(activity: dict, streams: dict | None = None) -> Image.Image:
-    """Layout A: single activity dashboard."""
     img = Image.new("1", (WIDTH, HEIGHT), 1)
     draw = ImageDraw.Draw(img)
 
     _draw_activity_header(draw, activity)
-    _draw_activity_track(draw, activity)
+    _draw_activity_track(img, activity)
     _draw_activity_stats(draw, activity)
     _draw_elevation_profile(draw, streams, activity)
 
@@ -248,72 +326,105 @@ def _draw_overview_header(
     year: int,
     athlete_name: str,
 ) -> None:
-    """Top bar: year + athlete name."""
     text = f"{year}  ·  {athlete_name.upper()}"
     draw.text((MAP_MARGIN, 10), text, font=_font(22, bold=True), fill=0)
     draw.line([(0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT)], fill=0, width=1)
 
 
+def _draw_ski_grid(
+    img: Image.Image,
+    stats,
+    tracks_box: tuple[int, int, int, int],
+) -> None:
+    """Render each ski tour as an individual small vignette in a grid.
+
+    Grid is 2 or 3 columns depending on count. Each cell scales to fit that
+    single track (better than a big cluttered overlay for sparse categories).
+    """
+    draw = ImageDraw.Draw(img)
+    x0, y0, x1, y1 = tracks_box
+    box_w = x1 - x0
+    box_h = y1 - y0
+
+    n = len(stats.polylines)
+    if n == 0:
+        cx = (x0 + x1) // 2
+        cy = (y0 + y1) // 2
+        draw.text((cx - 40, cy - 8), "no tracks", font=_font(14), fill=0)
+        return
+
+    # Grid dimensions
+    cols = 3 if n > 4 else 2
+    rows = (n + cols - 1) // cols
+
+    cell_w = box_w // cols
+    cell_h = box_h // rows
+    pad = 4
+
+    for i, poly in enumerate(stats.polylines):
+        row = i // cols
+        col = i % cols
+        cell_box = (
+            x0 + col * cell_w + pad,
+            y0 + row * cell_h + pad,
+            x0 + (col + 1) * cell_w - pad,
+            y0 + (row + 1) * cell_h - pad,
+        )
+
+        points = pl.decode(poly)
+        pixels = _project_polyline(points, cell_box)
+        if len(pixels) >= 2:
+            for offset in [(0, 0), (1, 0), (0, 1)]:
+                shifted = [(x + offset[0], y + offset[1]) for x, y in pixels]
+                draw.line(shifted, fill=0, width=1)
+
+
 def _draw_category_panel(
-    draw: ImageDraw.ImageDraw,
-    stats,  # aggregator.CategoryStats
+    img: Image.Image,
+    stats,
     box: tuple[int, int, int, int],
 ) -> None:
-    """One category panel: label + density heatmap + stats.
-
-    Density trick: render all tracks first into an 8-bit grayscale buffer
-    where overlapping tracks accumulate intensity. Then threshold to 1-bit
-    with a step function: pixels touched by many tracks -> black, rare -> white.
-    """
+    """One category panel: label + overlaid tracks with map context + stats."""
+    draw = ImageDraw.Draw(img)
     x0, y0, x1, y1 = box
 
     # Category label
     draw.text((x0 + 12, y0 + 8), stats.category.upper(),
               font=_font(20, bold=True), fill=0)
 
-    # Tracks area
     stats_h = 100
     tracks_box = (x0 + 8, y0 + 38, x1 - 8, y1 - stats_h)
 
     if stats.polylines:
         bounds = _compute_global_bounds(stats.polylines)
+        lat_min, lat_max, lon_min, lon_max = bounds
+        pad_lat = (lat_max - lat_min) * 0.08 or 0.02
+        pad_lon = (lon_max - lon_min) * 0.08 or 0.02
+        padded_bounds = (
+            lat_min - pad_lat, lat_max + pad_lat,
+            lon_min - pad_lon, lon_max + pad_lon,
+        )
 
-        # Render tracks into a grayscale intensity buffer
-        panel_w = tracks_box[2] - tracks_box[0]
-        panel_h = tracks_box[3] - tracks_box[1]
-        buf = Image.new("L", (panel_w, panel_h), 0)  # 0 = no track
-        buf_draw = ImageDraw.Draw(buf)
-
-        # Each track adds a small amount of intensity along its path
-        intensity_per_track = 45  # tune: higher = fewer tracks needed for black
-        buf_bounds = (0, 0, panel_w, panel_h)
+        _draw_cities(img, tracks_box, padded_bounds, max_cities=5)
 
         for poly in stats.polylines:
             points = pl.decode(poly)
-            # Project into buffer-local coords
-            pixels = _project_polyline(points, buf_bounds, bounds)
+            pixels = _project_polyline(points, tracks_box, padded_bounds)
             if len(pixels) >= 2:
-                buf_draw.line(pixels, fill=intensity_per_track, width=2)
+                draw.line(pixels, fill=0, width=1)
 
-        # Threshold to 1-bit: any pixel with meaningful intensity -> black
-        # Using PIL's built-in Floyd-Steinberg dithering gives us the density feel
-        # But on e-paper dithering can look muddy; use simple threshold
-        threshold = 40  # pixels darker than this become black
-        bw = buf.point(lambda p: 0 if p >= threshold else 255, mode="1")
-
-        # Paste onto the main image
-        img_source = draw._image  # PIL trick: access the underlying image
-        img_source.paste(bw, (tracks_box[0], tracks_box[1]))
+        _draw_compass(draw, tracks_box)
+        _draw_scale_bar(draw, tracks_box, padded_bounds)
     else:
         cx = (tracks_box[0] + tracks_box[2]) // 2
         cy = (tracks_box[1] + tracks_box[3]) // 2
         draw.text((cx - 40, cy - 8), "no tracks", font=_font(14), fill=0)
 
-    # Separator above stats
+    # Separator
     sep_y = y1 - stats_h
     draw.line([(x0 + 12, sep_y), (x1 - 12, sep_y)], fill=0, width=1)
 
-    # Stats rows
+    # Stats
     stat_lines = [
         f"{stats.count} rides",
         f"{stats.distance_m / 1000:.0f} km",
@@ -327,7 +438,6 @@ def _draw_category_panel(
 
 
 def _draw_last_ride_footer(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    """Bottom bar: last ride summary."""
     y_top = HEIGHT - FOOTER_HEIGHT
     draw.line([(0, y_top), (WIDTH, y_top)], fill=0, width=1)
 
@@ -335,12 +445,10 @@ def _draw_last_ride_footer(draw: ImageDraw.ImageDraw, activity: dict) -> None:
     name = activity["name"][:40]
     dist = activity["distance"] / 1000
     text = f"Last: {name}  ·  {ago}  ·  {dist:.1f} km"
-
     draw.text((MAP_MARGIN, y_top + 20), text, font=_font(14), fill=0)
 
 
 def render_overview(overview, athlete_name: str) -> Image.Image:
-    """Layout B: 2 category panels side by side + overview header/footer."""
     img = Image.new("1", (WIDTH, HEIGHT), 1)
     draw = ImageDraw.Draw(img)
 
@@ -350,14 +458,13 @@ def render_overview(overview, athlete_name: str) -> Image.Image:
     panel_bottom = HEIGHT - FOOTER_HEIGHT
     mid_x = WIDTH // 2
 
-    # Vertical divider between panels
     draw.line([(mid_x, panel_top), (mid_x, panel_bottom)], fill=0, width=1)
 
     if len(overview.categories) >= 1:
-        _draw_category_panel(draw, overview.categories[0],
+        _draw_category_panel(img, overview.categories[0],
                              (0, panel_top, mid_x, panel_bottom))
     if len(overview.categories) >= 2:
-        _draw_category_panel(draw, overview.categories[1],
+        _draw_category_panel(img, overview.categories[1],
                              (mid_x, panel_top, WIDTH, panel_bottom))
 
     _draw_last_ride_footer(draw, overview.last_activity)
@@ -366,7 +473,7 @@ def render_overview(overview, athlete_name: str) -> Image.Image:
 
 
 # =========================
-# CLI (smoke test)
+# CLI
 # =========================
 
 if __name__ == "__main__":

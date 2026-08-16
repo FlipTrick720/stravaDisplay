@@ -31,7 +31,7 @@ Verify display:
 python3 ~/e-Paper/RaspberryPi_JetsonNano/python/examples/epd_7in5_V2_test.py
 ```
 
-## Strava API
+## Strava API (do this on your dev machine, not the Pi)
 
 1. Register app at https://www.strava.com/settings/api
    - Name: anything without "Strava" in it (trademark)
@@ -40,18 +40,43 @@ python3 ~/e-Paper/RaspberryPi_JetsonNano/python/examples/epd_7in5_V2_test.py
    - Any 124×124+ logo (e.g. https://picsum.photos/200)
 2. Copy `config.example.json` to `config.json`
 3. Fill in `client_id` and `client_secret`
-4. Run OAuth once:
+4. Run OAuth once (opens a browser link, paste code back):
 ```bash
-   python3 src/setup_strava.py
+python3 src/setup_strava.py
 ```
-   - Paste code from redirected URL in browser back in.
+
+## Deploy config + code to Pi
+
+Once the OAuth flow succeeded locally you have a filled `config.json` with tokens.
+Copy it to the Pi and pull latest code:
+
+```bash
+# From your dev machine
+scp config.json flip@stravadisplay:~/stravaDisplay/config.json
+```
+
+Then on the Pi:
+
+```bash
+cd ~/stravaDisplay
+git pull
+
+# Dry run (renders to PNG, does NOT push to display)
+python3 src/display.py once
+
+# Real run (pushes to display, loops forever)
+python3 src/display.py
+```
+
+`Ctrl+C` to stop the loop.
 
 ## Development
 
 Preview renders as PNG (no Pi needed):
 ```bash
-python3 src/renderer.py           # overview
-python3 src/renderer.py latest    # single activity
+python3 src/renderer.py                # overview
+python3 src/renderer.py latest         # single activity
+python3 src/renderer.py error network  # error screens (categories: network, auth, overload, no_activities, rate_limit, generic)
 ```
 
 Run tests:

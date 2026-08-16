@@ -259,30 +259,57 @@ def _draw_category_panel(
     stats,  # aggregator.CategoryStats
     box: tuple[int, int, int, int],
 ) -> None:
-    """One category panel: label + all tracks overlaid + stats."""
+    """One category panel: label + density heatmap + stats.
+
+    Density trick: render all tracks first into an 8-bit grayscale buffer
+    where overlapping tracks accumulate intensity. Then threshold to 1-bit
+    with a step function: pixels touched by many tracks -> black, rare -> white.
+    """
     x0, y0, x1, y1 = box
 
     # Category label
     draw.text((x0 + 12, y0 + 8), stats.category.upper(),
               font=_font(20, bold=True), fill=0)
 
-    # Tracks area (below header, above stats)
+    # Tracks area
     stats_h = 100
     tracks_box = (x0 + 8, y0 + 38, x1 - 8, y1 - stats_h)
 
     if stats.polylines:
         bounds = _compute_global_bounds(stats.polylines)
+
+        # Render tracks into a grayscale intensity buffer
+        panel_w = tracks_box[2] - tracks_box[0]
+        panel_h = tracks_box[3] - tracks_box[1]
+        buf = Image.new("L", (panel_w, panel_h), 0)  # 0 = no track
+        buf_draw = ImageDraw.Draw(buf)
+
+        # Each track adds a small amount of intensity along its path
+        intensity_per_track = 45  # tune: higher = fewer tracks needed for black
+        buf_bounds = (0, 0, panel_w, panel_h)
+
         for poly in stats.polylines:
             points = pl.decode(poly)
-            pixels = _project_polyline(points, tracks_box, bounds)
+            # Project into buffer-local coords
+            pixels = _project_polyline(points, buf_bounds, bounds)
             if len(pixels) >= 2:
-                draw.line(pixels, fill=0, width=1)
+                buf_draw.line(pixels, fill=intensity_per_track, width=2)
+
+        # Threshold to 1-bit: any pixel with meaningful intensity -> black
+        # Using PIL's built-in Floyd-Steinberg dithering gives us the density feel
+        # But on e-paper dithering can look muddy; use simple threshold
+        threshold = 40  # pixels darker than this become black
+        bw = buf.point(lambda p: 0 if p >= threshold else 255, mode="1")
+
+        # Paste onto the main image
+        img_source = draw._image  # PIL trick: access the underlying image
+        img_source.paste(bw, (tracks_box[0], tracks_box[1]))
     else:
         cx = (tracks_box[0] + tracks_box[2]) // 2
         cy = (tracks_box[1] + tracks_box[3]) // 2
         draw.text((cx - 40, cy - 8), "no tracks", font=_font(14), fill=0)
 
-    # Separator line above stats block
+    # Separator above stats
     sep_y = y1 - stats_h
     draw.line([(x0 + 12, sep_y), (x1 - 12, sep_y)], fill=0, width=1)
 

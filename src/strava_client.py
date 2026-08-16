@@ -72,6 +72,46 @@ class StravaClient:
         """Get single activity with full details (needed for full polyline)."""
         return self._get(f"/activities/{activity_id}")
 
+    def activities_since(self, after_timestamp: int, per_page: int = 100) -> list:
+        """Get all activities since a UNIX timestamp, paginated.
+
+        Strava returns max 200 per page. We iterate until we get less than
+        per_page results (meaning we've hit the end).
+        """
+        all_activities = []
+        page = 1
+        while True:
+            batch = self._get(
+                "/athlete/activities",
+                params={
+                    "after": after_timestamp,
+                    "per_page": per_page,
+                    "page": page,
+                },
+            )
+            if not batch:
+                break
+            all_activities.extend(batch)
+            if len(batch) < per_page:
+                break
+            page += 1
+        return all_activities
+
+    def activity_streams(self, activity_id: int, keys: list[str] | None = None) -> dict:
+        """Get streams (raw datapoints) for an activity.
+
+        Common keys: 'altitude', 'distance', 'latlng', 'heartrate',
+        'watts', 'time', 'velocity_smooth', 'grade_smooth'.
+
+        Returns dict keyed by stream type, each value is {'data': [...], ...}.
+        """
+        if keys is None:
+            keys = ["altitude", "distance"]
+        return self._get(
+            f"/activities/{activity_id}/streams",
+            params={"keys": ",".join(keys), "key_by_type": "true"},
+        )
+
 
 if __name__ == "__main__":
     # Smoke test
@@ -81,5 +121,26 @@ if __name__ == "__main__":
     print(f"Bikes: {len(me.get('bikes', []))}")
 
     print("\nRecent activities:")
+    latest_id = None
     for act in client.activities(per_page=5):
         print(f"  [{act['type']:20s}] {act['name'][:40]:40s} {act['distance']/1000:6.1f} km")
+        if latest_id is None:
+            latest_id = act["id"]
+
+    # Test YTD fetch
+    from datetime import datetime
+    year_start = int(datetime(datetime.now().year, 1, 1).timestamp())
+    ytd = client.activities_since(year_start, per_page=100)
+    print(f"\nYTD activities: {len(ytd)}")
+
+    types = {}
+    for a in ytd:
+        t = a.get("sport_type") or a.get("type")
+        types[t] = types.get(t, 0) + 1
+    print(f"By type: {types}")
+
+    print(f"\nStreams for latest activity ({latest_id}):")
+    streams = client.activity_streams(latest_id)
+    for key, stream in streams.items():
+        data = stream.get("data", [])
+        print(f"  {key:15s} {len(data)} points, first: {data[0]:.1f}, last: {data[-1]:.1f}")

@@ -44,7 +44,20 @@ python3 ~/e-Paper/RaspberryPi_JetsonNano/python/examples/epd_7in5_V2_test.py
 ```bash
    python3 src/setup_strava.py
 ```
-   - Past code from redirectec Url in browser back in.
+   - Paste code from redirected URL in browser back in.
+
+## Development
+
+Preview renders as PNG (no Pi needed):
+```bash
+python3 src/renderer.py           # overview
+python3 src/renderer.py latest    # single activity
+```
+
+Run tests:
+```bash
+python3 tests/test_aggregator.py
+```
 
 ## Rules
 

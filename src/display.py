@@ -29,8 +29,8 @@ logging.basicConfig(
 log = logging.getLogger("display")
 
 
-# Show latest-activity view if last ride is within this window
-RECENT_ACTIVITY_HOURS = 3
+# Show latest-activity view if last ride is within this window (3h)
+RECENT_ACTIVITY_HOURS = 48
 
 # Default refresh interval if not set in config
 DEFAULT_REFRESH_SECONDS = 300

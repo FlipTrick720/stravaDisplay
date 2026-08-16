@@ -230,6 +230,52 @@ def _draw_activity_header(draw: ImageDraw.ImageDraw, activity: dict) -> None:
     draw.line([(0, HEADER_HEIGHT), (WIDTH, HEADER_HEIGHT)], fill=0, width=1)
 
 
+def _draw_kudos_badge(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+    """Draw kudos count as a badge in the top-right of the header area."""
+    kudos = activity.get("kudos_count", 0)
+    if kudos == 0:
+        return  # no badge if no kudos
+
+    text = f"{kudos}"
+    label = "KUDOS"
+
+    # Position: top-right, inside header area
+    x_right = WIDTH - MAP_MARGIN
+    y_top = 8
+
+    # Draw label small above the number
+    label_font = _font(11, bold=True)
+    number_font = _font(28, bold=True)
+
+    # Measure label so we can right-align
+    label_bbox = draw.textbbox((0, 0), label, font=label_font)
+    label_w = label_bbox[2] - label_bbox[0]
+    number_bbox = draw.textbbox((0, 0), text, font=number_font)
+    number_w = number_bbox[2] - number_bbox[0]
+
+    # Heart symbol (small triangle-ish shape done with polygon)
+    # We use ♥ from font, DejaVu supports it
+    heart = "♥"
+    heart_font = _font(20)
+    heart_bbox = draw.textbbox((0, 0), heart, font=heart_font)
+    heart_w = heart_bbox[2] - heart_bbox[0]
+
+    # Layout: KUDOS
+    #         ♥ 42
+    # Right-aligned
+    total_w = number_w + heart_w + 4
+    x_number = x_right - total_w
+    x_heart = x_number + number_w + 4
+
+    # Label above (centered above the number+heart cluster)
+    x_label = x_right - label_w - 2
+    draw.text((x_label, y_top), label, font=label_font, fill=0)
+
+    # Number + heart on same baseline below label
+    draw.text((x_number, y_top + 14), text, font=number_font, fill=0)
+    draw.text((x_heart, y_top + 18), heart, font=heart_font, fill=0)
+
+
 def _draw_activity_track(img: Image.Image, activity: dict) -> None:
     """Draw single activity polyline in the left panel with map context."""
     draw = ImageDraw.Draw(img)
@@ -331,6 +377,7 @@ def render_dashboard(activity: dict, streams: dict | None = None) -> Image.Image
     draw = ImageDraw.Draw(img)
 
     _draw_activity_header(draw, activity)
+    _draw_kudos_badge(draw, activity)
     _draw_activity_track(img, activity)
     _draw_activity_stats(draw, activity)
     _draw_elevation_profile(draw, streams, activity)

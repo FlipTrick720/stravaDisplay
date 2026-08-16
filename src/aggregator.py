@@ -175,7 +175,9 @@ def build_overview(activities: list[dict], year: int | None = None) -> Overview:
             for a in acts
             if a.get("map", {}).get("summary_polyline")
         ]
-        polylines_filtered = _filter_dominant_cluster(polylines_raw)
+        MAX_POLYLINES_PER_CAT = 15
+        recent_polylines = polylines_raw[:MAX_POLYLINES_PER_CAT]
+        polylines_filtered = _filter_dominant_cluster(recent_polylines)
 
         stats = CategoryStats(
             category=cat,

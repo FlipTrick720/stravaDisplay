@@ -22,7 +22,7 @@ def main() -> None:
     img = renderer.render_error(
         heading="Warte auf Server...",
         error_message=(
-            "Malte hat geflippt. Das Display kann den Server nicht erreichen "
+            "Malte hat verkackt. Das Display kann den Server nicht erreichen "
             "und zeigt deshalb dieses Bild. Es versucht es alle paar Minuten "
             "erneut."
         ),

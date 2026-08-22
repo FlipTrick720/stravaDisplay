@@ -1,107 +1,135 @@
-"""Main loop: fetch Strava data, render, push to e-paper display.
+"""Minimal e-paper client.
 
-Rotation logic:
-- Default view: overview (year stats + heatmaps per category)
-- If last activity is within RECENT_ACTIVITY_HOURS: alternate between
-  overview and latest-activity view each refresh cycle
-- On any error: render Windows-XP style error screen
+Fetches pre-rendered PNGs from the server and pushes them to the Waveshare
+7.5" V2 panel. No Strava calls, no rendering, no aggregation: all of that lives
+on the server. See CLAUDE.md "API-first rendering".
 
-Refresh cadence: REFRESH_INTERVAL_SECONDS (default 5 min from config)
+Two responsibilities, kept separate on purpose:
+  fetch_or_cached(view) -> PIL.Image   network + cache + fallback
+  push_to_display(img)                 hardware
+
+Run:
+  python3 display.py        loop forever
+  python3 display.py once   one fetch + push, then exit (for testing)
 """
+import io
 import logging
+import os
 import sys
+import tempfile
 import time
-from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
-
-import config
-import strava_client
-import aggregator
-import renderer
-import error_messages
+import yaml
+from PIL import Image
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,          # systemd/journald captures stdout
 )
 log = logging.getLogger("display")
 
+HERE = Path(__file__).parent
+CONFIG_PATH = HERE / "config.yaml"
+FALLBACK_PATH = HERE / "fallback" / "no-server.png"
 
-# Show latest-activity view if last ride is within this window (3h)
-RECENT_ACTIVITY_HOURS = 48
+PANEL_SIZE = (800, 480)
 
-# Default refresh interval if not set in config
-DEFAULT_REFRESH_SECONDS = 300
-
-
-def _is_recent(activity: dict, hours: int) -> bool:
-    """Check if activity was completed within the last N hours."""
-    dt = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
-    # Add moving_time so 'end of activity' is our reference, not start
-    end_time = dt.timestamp() + activity.get("moving_time", 0)
-    return (datetime.now(timezone.utc).timestamp() - end_time) < hours * 3600
+DEFAULTS = {
+    "server_url": "https://strava-display.maltebraig.com",
+    "refresh_interval_seconds": 300,
+    "views": ["weekly", "overview", "activity"],
+    "cache_path": "/home/flip/.cache/strava-display/current.png",
+    "request_timeout_seconds": 30,
+}
 
 
-def _fetch_and_render(client: strava_client.StravaClient, show_latest: bool):
-    """Fetch data + build image. Raises on any failure."""
-    if show_latest:
-        log.info("Rendering LATEST view")
-        activities = client.activities(per_page=1)
-        if not activities:
-            raise ValueError("no_activities")
-        activity_id = activities[0]["id"]
-        activity = client.activity(activity_id)
-        streams = client.activity_streams(activity_id)
-        return renderer.render_dashboard(activity, streams)
+def load_config() -> dict:
+    """Read config.yaml, falling back to DEFAULTS for anything absent."""
+    cfg = dict(DEFAULTS)
+    if CONFIG_PATH.exists():
+        loaded = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        cfg.update({k: v for k, v in loaded.items() if v is not None})
     else:
-        log.info("Rendering OVERVIEW view")
-        year_start = int(datetime(datetime.now().year, 1, 1).timestamp())
-        activities = client.activities_since(year_start, per_page=100)
-        if not activities:
-            raise ValueError("no_activities")
-        overview = aggregator.build_overview(activities)
-        athlete = client.athlete()
-        name = f"{athlete['firstname']} {athlete['lastname']}"
-        return renderer.render_overview(overview, name)
+        log.warning("%s not found, using defaults", CONFIG_PATH)
+    cfg["server_url"] = str(cfg["server_url"]).rstrip("/")
+    return cfg
 
 
-def _render_error_for_exception(exc: Exception):
-    """Map exception type to error category and render."""
-    tech = f"{type(exc).__name__}: {exc}"[:200]
-
-    if isinstance(exc, requests.ConnectionError) or isinstance(exc, requests.Timeout):
-        category = "network"
-    elif isinstance(exc, requests.HTTPError):
-        status = exc.response.status_code if exc.response else 0
-        if status == 401:
-            category = "auth"
-        elif status == 429:
-            category = "rate_limit"
-        elif 500 <= status < 600:
-            category = "network"
-        else:
-            category = "generic"
-    elif isinstance(exc, ValueError) and str(exc) == "no_activities":
-        category = "no_activities"
-    else:
-        category = "generic"
-
-    heading, message = error_messages.get_error(category)
-    log.warning("Rendering error screen: category=%s, tech=%s", category, tech)
-    return renderer.render_error(
-        error_message=message,
-        heading=heading,
-        technical_details=tech,
-    )
+def _normalize(img: Image.Image) -> Image.Image:
+    """Force the panel's exact geometry and bit depth."""
+    if img.size != PANEL_SIZE:
+        log.warning("Image is %s, expected %s, resizing", img.size, PANEL_SIZE)
+        img = img.resize(PANEL_SIZE)
+    if img.mode != "1":
+        img = img.convert("1")
+    return img
 
 
-def _push_to_display(img):
-    """Send PIL Image to the Waveshare e-paper display.
+def _write_cache(path: Path, data: bytes) -> None:
+    """Atomic write, so a power cut mid-write cannot leave a truncated cache."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".current.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
-    Import inside function so we can develop/test without hardware
-    (fails gracefully in WSL where waveshare_epd isn't installed).
+
+def fetch_or_cached(cfg: dict, view: str) -> Image.Image:
+    """Fetch one view, falling back to the cache and then the static image.
+
+    Never raises: the panel must always get something to show.
+    """
+    url = f"{cfg['server_url']}/display/{view}.png"
+    cache_path = Path(cfg["cache_path"])
+
+    try:
+        resp = requests.get(url, timeout=cfg["request_timeout_seconds"])
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content))
+        img.load()                       # force decode now, inside the try
+        generated = resp.headers.get("X-Generated-At", "unknown")
+        log.info("Fetched %s (%d bytes, server rendered at %s)",
+                 view, len(resp.content), generated)
+        try:
+            _write_cache(cache_path, resp.content)
+        except OSError as e:
+            log.warning("Could not write cache %s: %s", cache_path, e)
+        return _normalize(img)
+    except Exception as e:
+        log.warning("Fetch failed for %s (%s: %s)", view, type(e).__name__, e)
+
+    if cache_path.exists():
+        try:
+            img = Image.open(cache_path)
+            img.load()
+            age = time.time() - cache_path.stat().st_mtime
+            log.info("Using cached image (%.0f min old)", age / 60)
+            return _normalize(img)
+        except Exception as e:
+            log.warning("Cached image unreadable (%s), falling through", e)
+
+    log.warning("No cache, using static fallback %s", FALLBACK_PATH)
+    return _normalize(Image.open(FALLBACK_PATH))
+
+
+def push_to_display(img: Image.Image) -> None:
+    """Send a PIL image to the panel.
+
+    Imported inside the function so this module stays importable off-Pi
+    (waveshare_epd is not installable on a dev machine).
     """
     from waveshare_epd import epd7in5_V2
 
@@ -111,74 +139,44 @@ def _push_to_display(img):
     epd.sleep()
 
 
-def main_loop():
-    """Fetch → render → display → sleep → repeat."""
-    cfg = config.load()
-    refresh_s = cfg.get("display", {}).get(
-        "refresh_interval_seconds", DEFAULT_REFRESH_SECONDS
-    )
-    log.info("Starting main loop, refresh every %ds", refresh_s)
+def main_loop(cfg: dict) -> None:
+    views = cfg["views"]
+    interval = cfg["refresh_interval_seconds"]
+    log.info("Server %s, %d views, %ds per view", cfg["server_url"], len(views), interval)
 
-    # Alternates each cycle when we have a recent activity
-    show_latest_next = False
-
+    index = 0
     while True:
-        cycle_start = time.time()
+        started = time.time()
+        view = views[index % len(views)]
+        index += 1
 
+        img = fetch_or_cached(cfg, view)
         try:
-            client = strava_client.StravaClient()
-
-            # Check if we're in "recent activity" mode
-            latest_list = client.activities(per_page=1)
-            has_recent = bool(latest_list) and _is_recent(
-                latest_list[0], RECENT_ACTIVITY_HOURS
-            )
-
-            # Decide which view to show
-            if has_recent:
-                show_this_cycle = show_latest_next
-                show_latest_next = not show_latest_next  # toggle for next cycle
-            else:
-                show_this_cycle = False  # always overview when no recent
-                show_latest_next = False  # reset toggle
-
-            img = _fetch_and_render(client, show_latest=show_this_cycle)
-
+            push_to_display(img)
+            log.info("Displayed %s", view)
         except Exception as e:
-            log.exception("Error during fetch/render, showing error screen")
-            try:
-                img = _render_error_for_exception(e)
-            except Exception:
-                log.exception("Error rendering the error screen (yes really)")
-                time.sleep(refresh_s)
-                continue
+            log.exception("Display push failed (%s)", type(e).__name__)
 
-        try:
-            _push_to_display(img)
-        except Exception:
-            log.exception("Error pushing to display")
-
-        elapsed = time.time() - cycle_start
-        sleep_for = max(0, refresh_s - elapsed)
-        log.info("Cycle took %.1fs, sleeping %.1fs", elapsed, sleep_for)
+        elapsed = time.time() - started
+        sleep_for = max(0, interval - elapsed)
+        log.info("Cycle took %.1fs, sleeping %.0fs", elapsed, sleep_for)
         time.sleep(sleep_for)
 
 
 if __name__ == "__main__":
-    # CLI: allow "once" mode for testing without infinite loop
-    if len(sys.argv) > 1 and sys.argv[1] == "once":
-        cfg = config.load()
-        try:
-            client = strava_client.StravaClient()
-            latest = client.activities(per_page=1)
-            has_recent = bool(latest) and _is_recent(latest[0], RECENT_ACTIVITY_HOURS)
-            log.info("Recent activity within %dh: %s", RECENT_ACTIVITY_HOURS, has_recent)
-            img = _fetch_and_render(client, show_latest=has_recent)
-        except Exception as e:
-            log.exception("Error, rendering error screen")
-            img = _render_error_for_exception(e)
+    config = load_config()
 
-        img.save("preview_display.png")
-        log.info("Saved preview_display.png (skipping actual display push)")
+    if len(sys.argv) > 1 and sys.argv[1] == "once":
+        first = config["views"][0]
+        image = fetch_or_cached(config, first)
+        out = HERE / "preview.png"
+        image.save(out)
+        log.info("Saved %s", out)
+        try:
+            push_to_display(image)
+            log.info("Pushed %s to display", first)
+        except Exception as exc:
+            log.warning("Could not push to display (%s: %s). "
+                        "Expected if not running on the Pi.", type(exc).__name__, exc)
     else:
-        main_loop()
+        main_loop(config)

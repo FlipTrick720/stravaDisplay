@@ -1,10 +1,20 @@
-# Deployment (self-hosted + Cloudflare Tunnel)
+# Deployment
 
-Two containers on your own box. `server` runs uvicorn, `cloudflared` dials out to
-Cloudflare and serves `strava.<domain>` from it. Nothing is published to the host
-and no inbound port is opened, so no port forwarding and no firewall changes.
+Live at **https://strava-display.maltebraig.com**
 
-All commands run from the repo root on the host machine.
+| | |
+|---|---|
+| Host | Ubuntu Server, self-hosted, SSH access |
+| Runtime | Docker Compose, 2 containers (`server`, `cloudflared`) |
+| Ingress | Cloudflare Tunnel. No inbound port, no port forwarding |
+| Repo path | `~/stravaDisplay` |
+| Secrets | `.env` (tunnel token), `data/config.json` (Strava tokens) |
+
+Day-2 tasks (logs, restarts, failure modes) are in
+[OPERATIONS.md](OPERATIONS.md). System design is in
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+All commands run from `~/stravaDisplay` on the server unless marked `[local]`.
 
 ## Prerequisites
 
@@ -20,115 +30,171 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"   # log out and back in
 ```
 
-Also needed:
+Plus a Cloudflare account with the domain on Cloudflare nameservers (zone shows
+**Active** in the dashboard).
 
-- Cloudflare account, free tier is enough
-- Your domain already using Cloudflare nameservers (Cloudflare dashboard shows the zone as **Active**)
+### Generate the admin token
 
-## 1. Create the tunnel
+`/admin/bootstrap` and `/admin/cache` are guarded by a bearer token. **The
+server refuses to start if `STRAVA_ADMIN_TOKEN` is unset**, so this is a
+prerequisite, not an optional extra.
+
+```bash
+openssl rand -hex 32
+```
+
+Keep the output; it goes into `.env` in step 4 and into your `curl` calls.
+
+> **Upgrading an existing deployment:** a `git pull` that brings in the admin
+> endpoints will fail to start until `STRAVA_ADMIN_TOKEN` is present in `.env`.
+> Add it before `docker compose up -d --build`.
+
+## First-time setup
+
+These are the steps that produced the current deployment. Follow them to
+rebuild from scratch on a new host.
+
+### 1. Create the tunnel
 
 Cloudflare Zero Trust dashboard:
 
 1. **Networks -> Tunnels -> Create a tunnel**
 2. Connector type: **Cloudflared**
-3. Name it, e.g. `strava-display`
+3. Name: `strava-display`
 4. **Save tunnel**
-5. On the install screen, copy the token: the long string after `--token` in the shown command. Do not copy the whole command.
+5. On the install screen, copy the token: the long string after `--token`. Not the whole command.
 
-Leave the dashboard open, step 2 continues there.
-
-## 2. Public hostname
+### 2. Public hostname
 
 Same tunnel, **Public Hostname** tab -> **Add a public hostname**:
 
 | Field | Value |
 |---|---|
-| Subdomain | `strava` |
-| Domain | `<domain>.tld` |
+| Subdomain | `strava-display` |
+| Domain | `maltebraig.com` |
 | Type | `HTTP` |
 | URL | `server:8000` |
 
-`server:8000` is the compose service name, resolved on the shared `internal`
-network. It is not a hostname that exists on your LAN.
+`server:8000` is the compose service name on the `internal` network, not a LAN
+hostname. Cloudflare creates the DNS record itself, nothing to add at the
+registrar.
 
-Save. Cloudflare creates the DNS record itself, nothing to add at the registrar.
+### 3. Clone
 
-## 3. Token
+```bash
+ssh <user>@<server>
+git clone https://github.com/FlipTrick720/stravaDisplay.git ~/stravaDisplay
+cd ~/stravaDisplay
+```
+
+### 4. Tunnel token
 
 ```bash
 cp .env.example .env
-$EDITOR .env          # paste the token into TUNNEL_TOKEN
+nano .env          # TUNNEL_TOKEN and STRAVA_ADMIN_TOKEN
 ```
 
-Confirm it substituted:
+Confirm both substituted:
 
 ```bash
-docker compose config | grep TUNNEL_TOKEN
+docker compose config | grep -E "TUNNEL_TOKEN|STRAVA_ADMIN_TOKEN"
 ```
 
-Must show the real token, not blank.
+Must show real values, not blanks. A blank `STRAVA_ADMIN_TOKEN` means the
+container exits at startup.
 
-## 4. Bootstrap Strava config
-
-`setup_strava.py` is interactive (paste an OAuth code), so run it locally, then
-move the result onto the data volume.
-
-```bash
-cd server && python3 setup_strava.py && cd ..
-mv config.json data/config.json
-ls -la data/
-```
-
-`data/config.json` is gitignored. Token refresh rewrites it roughly every 6h, so
-back it up if you care about not redoing OAuth.
-
-## 5. Start
+### 5. Start
 
 ```bash
 docker compose up -d --build
 docker compose ps
-docker compose logs -f
 ```
 
-Expect cloudflared to log `Registered tunnel connection`. The dashboard shows the
-tunnel as **Healthy**.
+Both services should be `running`, `server` should be `healthy`. Until step 6
+the display endpoints serve the error screen; that is expected.
 
-## 6. Verify
+### 6. Bootstrap Strava config
+
+`setup_strava.py` is interactive (paste an OAuth code in a browser round trip),
+so run it on your workstation, then upload the result over the tunnel.
 
 ```bash
-curl -s https://strava.<domain>.tld/health
+[local] cd server && python3 setup_strava.py && cd ..
+[local] curl -X POST \
+             -H "Authorization: Bearer $STRAVA_ADMIN_TOKEN" \
+             -F "config=@config.json" \
+             https://strava-display.maltebraig.com/admin/bootstrap
+```
 
-curl -s -o act.png  -w "%{http_code} %{content_type} %{size_download}\n" https://strava.<domain>.tld/display/activity.png
-curl -s -o ovw.png  -w "%{http_code} %{content_type} %{size_download}\n" https://strava.<domain>.tld/display/overview.png
-curl -s -o week.png -w "%{http_code} %{content_type} %{size_download}\n" https://strava.<domain>.tld/display/weekly.png
+```json
+{"status":"ok","next_refresh":"immediate"}
+```
+
+The endpoint validates the file, writes it atomically to `/data/config.json`,
+and kicks off an immediate re-render instead of waiting for the next 4-minute
+tick. No SSH needed.
+
+`scp` still works if you prefer it:
+
+```bash
+[local] scp config.json <user>@<server>:~/stravaDisplay/data/config.json
+docker compose restart server
+```
+
+`data/config.json` is gitignored and survives rebuilds. Token refresh rewrites
+it roughly every 6h.
+
+## Verify
+
+```bash
+curl -s https://strava-display.maltebraig.com/health
+# {"status":"ok"}
+
+curl -s -o act.png  -w "%{http_code} %{content_type} %{size_download}\n" https://strava-display.maltebraig.com/display/activity.png
+curl -s -o ovw.png  -w "%{http_code} %{content_type} %{size_download}\n" https://strava-display.maltebraig.com/display/overview.png
 
 file act.png   # PNG image data, 800 x 480, 1-bit grayscale
 ```
 
-Display endpoints never return 5xx. On failure they render the XP error screen,
-so open the image, do not trust the status code. The technical details line shows
-where config resolution landed:
+In a browser, open
+`https://strava-display.maltebraig.com/display/overview.png`. It should render
+real activity data, not the error screen.
 
-- `config.json not found at /data/config.json` -> volume mounted, not seeded. Redo step 4.
+Display endpoints never return 5xx. On failure they return the error screen as a
+200 PNG, so **look at the image**, do not trust the status code. The technical
+details line names the cause:
+
+- `config.json not found at /data/config.json` -> mount is live, file missing. Redo step 5.
 - `config.json not found at /app/config.json` -> `STRAVA_CONFIG_DIR` did not apply. Check `docker-compose.yml`.
-- Real data, no error screen -> done.
-
-Force an error screen deliberately to sanity check rendering:
-
-```bash
-curl -s -o err.png https://strava.<domain>.tld/display/error.png?category=network
-```
 
 `weekly.png` is a placeholder until Phase 2.
 
 ## Update
 
 ```bash
+cd ~/stravaDisplay
 git pull
 docker compose up -d --build
 ```
 
 `./data` is a host directory, untouched by rebuilds. Tokens survive.
+
+## Logs
+
+```bash
+docker compose logs -f              # both services
+docker compose logs -f server       # app
+docker compose logs -f cloudflared  # tunnel
+```
+
+## Restart
+
+```bash
+docker compose restart server       # app only
+docker compose restart cloudflared  # tunnel only
+docker compose restart              # both
+docker compose down && docker compose up -d   # full recreate, keeps ./data
+```
 
 ## Rollback
 
@@ -145,41 +211,19 @@ git checkout main
 docker compose up -d --build
 ```
 
-## Operations
-
-```bash
-docker compose logs -f server        # app logs
-docker compose logs -f cloudflared   # tunnel logs
-docker compose restart server
-docker compose down                  # stop both, keeps ./data
-docker compose up -d --build         # after any code or Dockerfile change
-```
-
-Debug from inside the network without exposing a port:
-
-```bash
-docker compose exec server curl -s localhost:8000/health
-docker compose exec server ls -la /data
-```
-
 ## Notes
 
-**No published ports.** `server` has `expose`, not `ports`, so it is unreachable
-from the LAN and from the internet except through the tunnel. Adding a `ports:`
-entry to reach it locally undoes that; prefer `docker compose exec` above.
+**No published ports.** `server` uses `expose`, not `ports`, so it is
+unreachable from the LAN and the internet except through the tunnel. To poke it
+directly, use `docker compose exec server curl -s localhost:8000/health` rather
+than adding a `ports:` entry.
 
-**Network name is cosmetic.** The network is called `internal`, but do not add
-`internal: true` to it. That flag blocks egress and cloudflared would never reach
-Cloudflare.
+**Do not set `internal: true`** on the `internal` network. Despite the name that
+flag blocks egress, and cloudflared would never reach Cloudflare.
 
-**cloudflared waits for health.** `depends_on` uses `condition: service_healthy`
-against the `/health` endpoint, so the tunnel does not advertise a dead origin
-during a slow start.
+**No auth.** The tunnel publishes these endpoints to the open internet. Anyone
+with the URL can read the Strava stats. A Zero Trust Access policy would fix it,
+but the Pi client would then need a service token.
 
-**Auth is Cloudflare's job.** The tunnel publishes these endpoints to the open
-internet with no auth. Anyone with the URL can read your Strava stats. To lock it
-down, put a Zero Trust Access policy on the hostname, but note the Pi client
-would then need a service token.
-
-**Host uptime.** Unlike a PaaS, this is only up while your box is. `restart:
-unless-stopped` covers reboots once Docker starts on boot.
+**Uptime is the host's.** `restart: unless-stopped` covers reboots provided
+Docker starts on boot (`sudo systemctl enable docker`).

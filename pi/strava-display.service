@@ -1,0 +1,22 @@
+[Unit]
+Description=Strava Display e-paper client
+After=network-online.target
+Wants=network-online.target
+# Give up after 3 failed starts in 5 minutes instead of restarting forever.
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=flip
+WorkingDirectory=/home/flip/stravaDisplay/pi
+ExecStart=/usr/bin/python3 display.py
+Restart=on-failure
+RestartSec=30
+# Unbuffered, so log lines reach journald as they happen rather than in blocks.
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

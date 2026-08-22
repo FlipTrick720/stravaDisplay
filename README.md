@@ -1,15 +1,28 @@
 # Strava Display
 
-E-paper dashboard showing Strava stats. A server renders 800x480 1-bit PNGs, a
-Raspberry Pi fetches them over HTTP and pushes them to the panel. The Pi renders
-nothing.
+E-paper dashboard showing Strava stats. A server renders 800x480 1-bit PNGs and
+a Raspberry Pi fetches them over HTTP and pushes them to a Waveshare 7.5" panel.
+
+**Live:** https://strava-display.maltebraig.com
+
+## Docs
+
+| | |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagram, request flow, where secrets live |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Setup from scratch, redeploy, rollback |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Logs, restarts, failure modes |
+| [pi/setup.md](pi/setup.md) | Pi-side install, systemd service, troubleshooting |
+| [CLAUDE.md](CLAUDE.md) | Full project context, design language, phase status |
 
 ## Layout
 
 ```
 server/   FastAPI app. Strava fetching, aggregation, PNG rendering.
-pi/       Client for the Waveshare panel.
-docs/     DEPLOYMENT.md
+          Dockerfile lives here; build context is the repo root.
+pi/       Slim fetch-and-push client for the Waveshare panel. See pi/setup.md.
+docs/     Architecture, deployment, operations.
+data/     Bind-mounted to /data. Holds config.json in production.
 tests/    pytest
 setup/    Pi provisioning scripts
 ```
@@ -22,10 +35,16 @@ GET /display/overview.png    year overview, 2 most-recent categories
 GET /display/weekly.png      placeholder until Phase 2
 GET /display/error.png?category=network
 GET /health
+GET  /admin/cache        cache freshness JSON      (bearer auth)
+POST /admin/bootstrap    upload config.json        (bearer auth)
 ```
 
-The display endpoints never return 5xx. On failure they render an error screen,
-so check the image, not the status code.
+Views are pre-rendered by a background task every 4 minutes and served from an
+in-memory cache, so requests never hit the Strava API. Each response carries
+`X-Generated-At`.
+
+Display endpoints never return 5xx. On failure they render an error screen as a
+200 PNG, so check the image, not the status code.
 
 ## Local development
 
@@ -66,28 +85,28 @@ cd server && python3 setup_strava.py
 Writes tokens into `config.json`. Gitignored, never commit it.
 
 `config.json` is read from `$STRAVA_CONFIG_DIR` if set, otherwise the repo root.
-Production sets it to the mounted volume.
+Production sets it to `/data`.
 
 ## Deployment
 
-Self-hosted with `docker compose`, published through a Cloudflare Tunnel. No
-inbound ports, no port forwarding.
+Self-hosted on Ubuntu with `docker compose`, published through a Cloudflare
+Tunnel. No inbound ports, no port forwarding.
 
 ```bash
-cp .env.example .env     # paste Cloudflare tunnel token
+cp .env.example .env     # TUNNEL_TOKEN + STRAVA_ADMIN_TOKEN
 docker compose up -d --build
 ```
+
+The server refuses to start without `STRAVA_ADMIN_TOKEN`; generate one with
+`openssl rand -hex 32`.
 
 Full steps: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Status
 
-- **Phase 1 (done)** server, endpoints, Docker, compose + Cloudflare Tunnel. Not deployed yet.
-- **Phase 2** real weekly view, component refactor of `renderer.py`, extended sport categories, response caching.
-- **Phase 3** rewrite `pi/display.py` as a thin fetch-and-push client, systemd unit, Pi provisioning.
-
-`pi/display.py` is the pre-server main loop, moved verbatim. It still does its
-own Strava fetching and rendering and does not run as-is. Phase 3 replaces it.
+- **Phase 1 (done, deployed)** server, endpoints, Docker Compose, Cloudflare Tunnel. Live and verified end-to-end.
+- **Done since** server-side caching with background refresh, `/admin/bootstrap` remote config upload, slim Pi client.
+- **Phase 2** weekly view, redesign existing views to the new mocks.
 
 ## Hardware
 

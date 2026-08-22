@@ -22,3 +22,7 @@ Thumbs.db
 
 # Pictures
 *.png
+# ...except the Pi's offline fallback, which must ship with the repo.
+!pi/fallback/no-server.png
+# Local preview written by `display.py once`
+pi/preview.png

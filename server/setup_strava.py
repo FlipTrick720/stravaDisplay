@@ -1,7 +1,22 @@
 """One-time Strava OAuth setup.
 
-Run this once (or when tokens are lost). It walks through the OAuth flow
-manually - no local webserver needed. Flow:
+STILL THE ENTRY POINT for getting tokens. Run it LOCALLY (it needs a browser
+for the OAuth redirect, so it cannot run unattended in the container), then
+push the resulting config.json to the deployed server:
+
+    cd server && python3 setup_strava.py          # writes ../config.json
+    curl -X POST \\
+         -H "Authorization: Bearer $STRAVA_ADMIN_TOKEN" \\
+         -F "config=@config.json" \\
+         https://strava-display.maltebraig.com/admin/bootstrap
+
+The bootstrap endpoint validates the file, writes it atomically to the
+server's config volume, and triggers an immediate re-render. That replaces the
+old scp-into-data/ step. See docs/DEPLOYMENT.md.
+
+Run this again whenever the refresh token stops being accepted.
+
+It walks through the OAuth flow manually - no local webserver needed. Flow:
 
   1. Prints authorization URL. Open it in browser.
   2. Authorize the app for your Strava account.

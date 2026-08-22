@@ -1,0 +1,10 @@
+# Pi-side only. The Pi fetches PNGs and pushes pixels; it does not render.
+# Deliberately absent: polyline, fastapi, uvicorn, and anything Strava-related.
+
+requests
+Pillow
+PyYAML          # config.yaml parsing
+
+# Waveshare e-Paper HAT V2 driver dependencies
+spidev
+RPi.GPIO

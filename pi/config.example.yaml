@@ -1,0 +1,20 @@
+# Copy to config.yaml. Values here are the defaults baked into display.py,
+# so an empty config.yaml behaves identically.
+
+server_url: https://strava-display.maltebraig.com
+
+# Seconds per view. 3 views x 300s = each view refreshes every 15 minutes.
+# The server re-renders every 240s, so the Pi never sees the same bytes twice.
+refresh_interval_seconds: 300
+
+# Rotation order. Drop "weekly" until Phase 2 implements it if the
+# placeholder image is annoying.
+views:
+  - weekly
+  - overview
+  - activity
+
+# Last successfully fetched PNG. Shown when the server is unreachable.
+cache_path: /home/flip/.cache/strava-display/current.png
+
+request_timeout_seconds: 30

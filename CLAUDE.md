@@ -6,9 +6,16 @@ E-paper display showing Strava stats. Gift for a friend. Owner: Malte Braig (Mas
 
 ## Status
 
-Phase 1 done: server skeleton, 3 PNG endpoints (2 real, weekly is a placeholder), Docker + docker-compose + Cloudflare Tunnel config. Not deployed yet, Strava config not bootstrapped in `./data` yet.
+**Phase 1 COMPLETE and deployed.** Live at `strava-display.maltebraig.com`, self-hosted on an Ubuntu server (SSH), Docker Compose, Cloudflare Tunnel. Verified end-to-end through the tunnel: `/health`, `/display/overview.png`, `/display/activity.png`, `/display/error.png`. `/display/weekly.png` returns a placeholder.
 
-Phase 2 open: real weekly view, component refactor of `renderer.py`, rewrite `pi/display.py` as thin client, extended sport categories, response caching.
+**Phase 2 scope:**
+1. Weekly view (real implementation, replacing the placeholder)
+2. Redesign the existing views to match the new mocks
+3. ~~Rewrite `pi/display.py` as the slim fetch-and-push client~~ **DONE**
+
+Also done ahead of schedule: server-side caching with background refresh, and the `/admin/bootstrap` remote config upload.
+
+Carried over, not currently scheduled: component refactor of `renderer.py`, extended sport categories. See the TARGET sections below; they are still accurate descriptions of unbuilt work.
 
 Sections below marked **TARGET** describe the intended end state and are NOT implemented yet. Do not assume that code exists.
 
@@ -43,7 +50,9 @@ server/Dockerfile   python:3.11-slim, uvicorn on :8000. Build context is REPO RO
 docker-compose.yml  server + cloudflared, shared `internal` network, no published ports
 .dockerignore       keeps data/, .env, .git out of the build context
 .env.example        TUNNEL_TOKEN documentation. Copy to .env (gitignored)
-docs/DEPLOYMENT.md  the deployment runbook
+docs/ARCHITECTURE.md  system diagram, request flow, where secrets live
+docs/DEPLOYMENT.md    setup + redeploy runbook
+docs/OPERATIONS.md    logs, restarts, failure modes
 data/               host bind mount -> /data. Holds config.json in prod. .gitkeep tracked
 config.json         secrets, gitignored. Repo root for local dev; data/ in prod
 ```
@@ -55,10 +64,14 @@ GET /display/overview.png - year overview, 2 most-recently-used categories
 GET /display/activity.png - detail of most recent activity
 GET /display/error.png?category=<cat> - error screen (categories: network, auth, overload, no_activities, rate_limit, generic)
 GET /health - health check, used by the compose healthcheck
+GET /admin/cache - cache freshness JSON (bearer auth)
+POST /admin/bootstrap - upload config.json (bearer auth, multipart field "config")
 
 `overview.png` and `activity.png` never return 5xx. On any fetch/render failure they fall back to `renderer.render_error()` with the exception mapped to a category, so the Pi always gets a displayable 800x480 PNG. Mapping lives in `app.py:_render_error_for_exception` and duplicates the logic from the old `display.py`; keep the two in sync or unify them in Phase 2.
 
-**TARGET:** server-side response caching (~5 min) to reduce Strava API load. Not implemented. Every request currently hits the Strava API, and `overview.png` paginates the full year.
+**Caching is implemented.** A background task (`_refresh_loop` in `app.py`) re-renders every view every 240s into an in-memory dict; handlers only return cached bytes. Requests never hit Strava. A failed render keeps the previous bytes rather than replacing them with an error, except on a cold cache. Every PNG response carries `X-Generated-At`.
+
+`/admin/*` is guarded by `STRAVA_ADMIN_TOKEN`; the server **refuses to start** if it is unset.
 
 ## Running
 
@@ -99,7 +112,29 @@ This is what decouples the token store from the image. The mount must not land o
 
 ## Deployment (Cloudflare Tunnel)
 
-The only deployment target. Full runbook: `docs/DEPLOYMENT.md`.
+**Deployed and live.** The only deployment target.
+
+| | |
+|---|---|
+| Domain | `strava-display.maltebraig.com` |
+| Host | Ubuntu Server, self-hosted, reached over SSH |
+| Repo path | `~/stravaDisplay` |
+| Runtime | Docker Compose, 2 containers |
+| Ingress | Cloudflare Tunnel, no inbound port |
+
+Docs: `docs/DEPLOYMENT.md` (setup and redeploy), `docs/OPERATIONS.md` (logs, restarts, failure modes), `docs/ARCHITECTURE.md` (diagram, request flow, secrets).
+
+### Known limitations
+
+Accepted for now. Do not treat any of these as bugs to fix mid-task without asking.
+
+- **No monitoring or alerting.** Nothing notices if it goes down; you find out from a stale panel.
+- **No backups of `data/config.json`.** It is the only unrecoverable state. A lost disk means redoing the OAuth flow.
+- **No CI/CD.** Deploys are a manual `git pull` + `docker compose up -d --build` over SSH.
+- **refresh_token rotation is untested.** Strava may rotate the refresh token; the atomic write path exists but has not been exercised through a real rotation.
+- **No auth on the endpoints.** The tunnel publishes them to the open internet.
+- **Admin token is a single shared secret.** No rotation, no per-client tokens. Leaking it allows overwriting the Strava config.
+- **Cache is in-memory only.** A container restart drops it back to the loading placeholder until the first background round completes (a few seconds).
 
 Two containers via `docker compose`:
 - `server` - builds from `server/Dockerfile`, `STRAVA_CONFIG_DIR=/data`, bind mount `./data:/data`

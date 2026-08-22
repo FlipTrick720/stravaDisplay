@@ -11,6 +11,8 @@ services:
     restart: unless-stopped
     environment:
       STRAVA_CONFIG_DIR: /data
+      # Guards /admin/*. The server refuses to start if this is unset.
+      STRAVA_ADMIN_TOKEN: ${STRAVA_ADMIN_TOKEN}
     volumes:
       # Host ./data holds config.json with the Strava tokens. Token refresh
       # rewrites it roughly every 6h, so it must survive container rebuilds.

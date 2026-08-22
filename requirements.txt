@@ -3,3 +3,5 @@ Pillow==12.3.0
 polyline==2.0.4
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+# Required by FastAPI for multipart/form-data (POST /admin/bootstrap upload)
+python-multipart==0.0.20

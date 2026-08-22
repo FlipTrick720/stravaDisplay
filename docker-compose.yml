@@ -1,0 +1,48 @@
+name: strava-display
+
+services:
+  server:
+    build:
+      # Context stays the repo root even though the Dockerfile lives in
+      # server/: it COPYs requirements.txt and config.example.json from here.
+      # .dockerignore keeps data/ and .env out of the context.
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      STRAVA_CONFIG_DIR: /data
+    volumes:
+      # Host ./data holds config.json with the Strava tokens. Token refresh
+      # rewrites it roughly every 6h, so it must survive container rebuilds.
+      - ./data:/data
+    # No `ports:` on purpose. Nothing is published to the host. The only route
+    # in from the internet is the tunnel, so there is no port to attack.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - internal
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Read from .env at the repo root. Copy .env.example to .env first.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+    # Do NOT add `internal: true` here. Despite the name, that flag blocks
+    # outbound traffic, and cloudflared needs egress to reach Cloudflare's edge.

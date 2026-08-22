@@ -1,0 +1,28 @@
+# Build context is the repo root, so keep secrets and cruft out of it.
+# Nothing here is COPYed by server/Dockerfile; this stops it being sent to the
+# Docker daemon at all.
+
+# Secrets
+.env
+config.json
+data/
+
+# VCS and docs
+.git/
+.gitignore
+docs/
+*.md
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Not needed in the image
+tests/
+setup/
+systemd/
+pi/
+*.png

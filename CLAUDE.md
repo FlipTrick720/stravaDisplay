@@ -6,7 +6,7 @@ E-paper display showing Strava stats. Gift for a friend. Owner: Malte Braig (Mas
 
 ## Status
 
-Phase 1 done: server skeleton, 3 PNG endpoints (2 real, weekly is a placeholder), Docker + Fly.io config. Not deployed yet, Strava config not bootstrapped on the volume yet.
+Phase 1 done: server skeleton, 3 PNG endpoints (2 real, weekly is a placeholder), Docker + docker-compose + Cloudflare Tunnel config. Not deployed yet, Strava config not bootstrapped in `./data` yet.
 
 Phase 2 open: real weekly view, component refactor of `renderer.py`, rewrite `pi/display.py` as thin client, extended sport categories, response caching.
 
@@ -17,10 +17,10 @@ Sections below marked **TARGET** describe the intended end state and are NOT imp
 **Two components:**
 
 1. **`server/`** - FastAPI app that fetches Strava data and renders PNG views
-   - Runs on Fly.io (Docker deployment, primary region `fra`)
-   - Domain: `strava.<mydomain>.tld` (CNAME from Spaceship DNS)
+   - Self-hosted via docker-compose, exposed through a Cloudflare Tunnel
+   - Domain: `strava.<mydomain>.tld`, DNS managed by Cloudflare (domain must be on Cloudflare nameservers)
    - Serves per-view PNG endpoints (see Endpoints below)
-   - Holds Strava OAuth tokens in a mounted volume at `/data`
+   - Holds Strava OAuth tokens in `./data` on the host, bind-mounted to `/data` in the container
 
 2. **`pi/`** - Minimal Python client on Raspberry Pi Zero WH
    - Fetches PNGs from server, pushes to Waveshare 7.5" e-Paper HAT V2
@@ -39,9 +39,13 @@ pi/display.py    stale old main loop, see above
 tests/           pytest, adds server/ to sys.path
 setup/           Pi provisioning scripts (part1 preboot, part2 postboot)
 systemd/         strava-display.service
-Dockerfile       python:3.11-slim, uvicorn on :8000
-fly.toml         Fly.io app config, /health check, strava_config volume -> /data
-config.json      secrets, gitignored. Local dev only; prod reads /data/config.json
+server/Dockerfile   python:3.11-slim, uvicorn on :8000. Build context is REPO ROOT
+docker-compose.yml  server + cloudflared, shared `internal` network, no published ports
+.dockerignore       keeps data/, .env, .git out of the build context
+.env.example        TUNNEL_TOKEN documentation. Copy to .env (gitignored)
+docs/DEPLOYMENT.md  the deployment runbook
+data/               host bind mount -> /data. Holds config.json in prod. .gitkeep tracked
+config.json         secrets, gitignored. Repo root for local dev; data/ in prod
 ```
 
 ## Endpoints
@@ -50,7 +54,7 @@ GET /display/weekly.png - week vs previous weeks bar chart view (**placeholder**
 GET /display/overview.png - year overview, 2 most-recently-used categories
 GET /display/activity.png - detail of most recent activity
 GET /display/error.png?category=<cat> - error screen (categories: network, auth, overload, no_activities, rate_limit, generic)
-GET /health - health check for Fly.io
+GET /health - health check, used by the compose healthcheck
 
 `overview.png` and `activity.png` never return 5xx. On any fetch/render failure they fall back to `renderer.render_error()` with the exception mapped to a category, so the Pi always gets a displayable 800x480 PNG. Mapping lives in `app.py:_render_error_for_exception` and duplicates the logic from the old `display.py`; keep the two in sync or unify them in Phase 2.
 
@@ -87,29 +91,37 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 ```
 
 - **Local dev:** env var unset, falls back to repo root. `setup_strava.py` and the dev server agree.
-- **Fly.io:** `STRAVA_CONFIG_DIR=/data` (set in `fly.toml [env]`), pointing at the mounted volume.
+- **Prod:** `STRAVA_CONFIG_DIR=/data` (set in `docker-compose.yml`), pointing at the bind mount. Host side is `./data`.
 
-Resolved at import, so the env var must be set before `config` is imported. Fine via `fly.toml`, but relevant if anything ever sets it at runtime.
+Resolved at import, so the env var must be set before `config` is imported. Fine via compose `environment:`, but relevant if anything ever sets it at runtime.
 
-This is what decouples the token store from the image. The volume must not be mounted at `/app`, which would shadow the deployed code.
+This is what decouples the token store from the image. The mount must not land on `/app`, which would shadow the deployed code.
 
-## Deployment (Fly.io)
+## Deployment (Cloudflare Tunnel)
 
-Docker mirrors the dev server: `WORKDIR /app/server` so `app.py` can import its siblings as top-level modules. That WORKDIR no longer determines where `config.json` is found; `STRAVA_CONFIG_DIR` does.
+The only deployment target. Full runbook: `docs/DEPLOYMENT.md`.
 
-`fly.toml` essentials:
-- `primary_region = "fra"` (Frankfurt, closest to AT)
-- `internal_port = 8000`, matching the uvicorn CMD
-- `auto_stop_machines = "stop"` + `min_machines_running = 0`, so it scales to zero between Pi polls. The Pi hits it every 5 min and eats a cold start; acceptable for an e-ink refresh, and it keeps the thing near-free.
-- `[mounts] source = "strava_config", destination = "/data"`
+Two containers via `docker compose`:
+- `server` - builds from `server/Dockerfile`, `STRAVA_CONFIG_DIR=/data`, bind mount `./data:/data`
+- `cloudflared` - `cloudflare/cloudflared:latest`, `tunnel --no-autoupdate run`, `TUNNEL_TOKEN` from `.env`
 
-**Not yet done:** never deployed, and the volume has no `config.json` on it. Until bootstrapped, the Strava endpoints return the XP error screen (not a 5xx) with "config.json not found at /data/config.json" in the technical details line. That message is the quickest check that the mount is live but unseeded.
+Docker mirrors the dev server: `WORKDIR /app/server` so `app.py` can import its siblings as top-level modules. That WORKDIR does not determine where `config.json` is found; `STRAVA_CONFIG_DIR` does.
 
-Bootstrapping needs a decision: `setup_strava.py` is interactive (paste an OAuth code at a prompt), so it cannot just be run in a Fly machine as-is. Options are running OAuth locally then pushing the resulting `config.json` onto the volume, or seeding tokens from Fly secrets on first boot.
+**Build context is the repo root even though the Dockerfile lives in `server/`.** It COPYs `requirements.txt` and `config.example.json`, both of which sit at the root, so compose sets `context: .` with `dockerfile: server/Dockerfile`. Changing the context to `./server` breaks those COPYs. `.dockerignore` keeps `data/`, `.env` and `.git/` out of the context.
 
-**Volume caveat:** a Fly volume is tied to one machine in one region. Scaling past a single machine means the second one gets no config, so keep this single-machine unless the token store moves elsewhere.
+**No published ports.** `server` uses `expose`, not `ports`. Nothing is bound on the host and no inbound firewall rule exists; the tunnel dials out. Adding a `ports:` entry undoes that. Use `docker compose exec server curl -s localhost:8000/health` to poke it instead.
 
-**Unverified:** whether the `[[http_service.checks]]` health check keeps a machine from auto-stopping. Fly's autostop docs do not address it. If the app never scales to zero after deploy, suspect the check interval first.
+**Routing:** the Cloudflare dashboard maps `strava.<domain>` to `http://server:8000`, resolved by compose DNS on the shared `internal` network. Cloudflare creates the DNS record itself, nothing at the registrar.
+
+**Network naming trap:** the network is named `internal`, but never set `internal: true` on it. That flag blocks egress and cloudflared could not reach Cloudflare's edge.
+
+**Not yet done:** never deployed, `./data` has no `config.json`. Until bootstrapped, the Strava endpoints return the XP error screen (not a 5xx) with "config.json not found at /data/config.json" in the technical details. That message is the quickest check that the mount is live but unseeded; `/app/config.json` instead would mean `STRAVA_CONFIG_DIR` did not apply.
+
+**Bootstrap:** `setup_strava.py` is interactive (paste an OAuth code), so run it locally and `mv config.json data/config.json`. Token refresh rewrites that file roughly every 6h via atomic write, so `./data` must persist across rebuilds. It does, being a host directory.
+
+**No auth.** The tunnel publishes these endpoints to the open internet. Anyone with the URL reads the Strava stats. A Zero Trust Access policy would fix it but the Pi client would then need a service token.
+
+**Uptime is the host's.** Only reachable while the box is up. `restart: unless-stopped` covers reboots if Docker starts on boot.
 
 ## Rendering Approach
 

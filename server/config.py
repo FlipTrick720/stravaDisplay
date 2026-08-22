@@ -2,6 +2,12 @@
 
 Loads and saves config.json which holds Strava OAuth tokens and display settings.
 
+Two sources, in priority order:
+
+  1. STRAVA_CONFIG_DIR - directory holding config.json. Set to /data in
+                         docker-compose (host side ./data).
+  2. repo root         - local dev fallback, where setup_strava.py writes.
+
 save() uses atomic write-then-rename to prevent corruption on power loss or
 kernel kill mid-write. This matters because save() is called on every OAuth
 token refresh (~every 6h) - over months of runtime, a non-atomic write will
@@ -12,18 +18,14 @@ import os
 import tempfile
 from pathlib import Path
 
-# In production (Fly.io) config.json lives on a mounted volume, set via
-# STRAVA_CONFIG_DIR=/data. Locally it falls back to the repo root, which is
-# where setup_strava.py and the dev server expect it.
-#
-# Resolved at import time, so the env var must be set before this module is
-# imported (it is, via fly.toml [env]).
+# Resolved at import time, so STRAVA_CONFIG_DIR must be set before this module
+# is imported (it is, via docker-compose.yml `environment:`).
 CONFIG_DIR = Path(os.environ.get("STRAVA_CONFIG_DIR", Path(__file__).parent.parent))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
 def load() -> dict:
-    """Load config.json from repo root.
+    """Load config.json from CONFIG_PATH.
 
     Raises FileNotFoundError with a helpful message if the file is missing.
     Raises json.JSONDecodeError if the file exists but is malformed - caller
@@ -74,10 +76,10 @@ def save(config: dict) -> None:
 if __name__ == "__main__":
     # Smoke test: round-trip
     cfg = load()
-    print(f"Loaded config with keys: {list(cfg.keys())}")
+    print(f"Loaded config from {CONFIG_PATH}")
+    print(f"Keys: {list(cfg.keys())}")
     print(f"Strava client_id: {cfg['strava']['client_id']}")
 
-    # Test atomic save by writing back unchanged
     save(cfg)
     cfg2 = load()
     assert cfg == cfg2, "Round-trip failed"

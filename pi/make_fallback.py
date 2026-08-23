@@ -24,7 +24,7 @@ def main() -> None:
         error_message=(
             "Malte hat verkackt. Das Display kann den Server nicht erreichen "
             "und zeigt deshalb dieses Bild. Es versucht es alle paar Minuten "
-            "erneut."
+            "erneut. Have u tried turning it off and on again ?"
         ),
         technical_details=(
             "Kein zwischengespeichertes Bild vorhanden. "

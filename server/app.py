@@ -283,6 +283,15 @@ def require_admin(authorization: str | None = Header(None)) -> None:
 # Endpoints
 # =========================
 
+# FastAPI serves the same in-memory bytes to every client until the next
+# background refresh round, but browsers/CDNs (Cloudflare) don't know that
+# and will happily cache a PNG response on their own. The Pi always wants
+# this round's bytes, and Malte needs the browser to reflect a redeploy
+# immediately without manually busting cache - so every /display/*.png
+# response is marked non-cacheable, deliberately overriding HTTP's default.
+NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+
+
 def _cached_response(key: str, fallback_key: str | None = None) -> Response:
     entry = _cache.get(key)
     if entry is None and fallback_key:
@@ -290,11 +299,11 @@ def _cached_response(key: str, fallback_key: str | None = None) -> Response:
     if entry is None:
         # Only reachable before the first round for a view with no placeholder.
         return Response(content=_centered_text_png("LADE DATEN..."),
-                        media_type="image/png")
+                        media_type="image/png", headers=NO_CACHE_HEADERS)
     return Response(
         content=entry.png,
         media_type="image/png",
-        headers={"X-Generated-At": entry.generated_at.isoformat()},
+        headers={**NO_CACHE_HEADERS, "X-Generated-At": entry.generated_at.isoformat()},
     )
 
 

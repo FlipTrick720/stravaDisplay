@@ -1,11 +1,12 @@
-"""Tests for aggregator category selection logic."""
+"""Tests for aggregator category selection and weekly-bucketing logic."""
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 # Make server/ importable
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
-from aggregator import build_overview, categorize, CATEGORY_MAP
+from aggregator import build_overview, build_weekly, categorize, CATEGORY_MAP
 
 
 def _act(sport_type: str, start_date: str = "2026-08-15T10:00:00Z", **extra) -> dict:
@@ -101,6 +102,84 @@ def test_build_overview_empty_raises():
     import pytest
     with pytest.raises(ValueError):
         build_overview([])
+
+
+# =========================
+# build_weekly
+# =========================
+
+# Thursday of ISO week 34, 2026 -> current week is Mon 2026-08-17 .. Sun 2026-08-23.
+NOW = datetime(2026, 8, 20, 12, 0, 0)
+
+
+def test_build_weekly_returns_six_weeks():
+    overview = build_weekly([], now=NOW)
+    assert len(overview.weeks) == 6
+    assert overview.current_week is overview.weeks[-1]
+
+
+def test_build_weekly_monday_sunday_bucketing():
+    activities = [
+        _act("Run", "2026-08-17T00:01:00Z", name="Monday 00:01, current week"),
+        _act("Run", "2026-08-23T23:59:00Z", name="Sunday 23:59, current week"),
+        _act("Run", "2026-08-16T23:59:00Z", name="Sunday 23:59, previous week"),
+        _act("Run", "2026-08-24T00:01:00Z", name="Next Monday, out of range"),
+    ]
+    overview = build_weekly(activities, now=NOW)
+
+    current = overview.current_week
+    assert current.start_date == date(2026, 8, 17)
+    assert current.end_date == date(2026, 8, 23)
+    assert current.activity_count == 2
+
+    previous = overview.weeks[-2]
+    assert previous.end_date == date(2026, 8, 16)
+    assert previous.activity_count == 1
+
+    # 2026-08-24 falls outside the 6-week window entirely - dropped, not
+    # miscounted into either neighboring week.
+    assert overview.total_activities == 3
+
+
+def test_build_weekly_current_week_flagged():
+    overview = build_weekly([], now=NOW)
+    for week in overview.weeks[:-1]:
+        assert week.is_current is False
+    assert overview.weeks[-1].is_current is True
+    assert overview.current_week.iso_week == 34
+    assert overview.current_week.year == 2026
+
+
+def test_build_weekly_avg_excludes_current_week():
+    activities = [
+        # Current week: huge distance that must NOT pull the average up.
+        _act("Ride", "2026-08-18T10:00:00Z", distance=999_000),
+        # Previous completed week (Mon 2026-08-10 .. Sun 2026-08-16).
+        _act("Ride", "2026-08-11T10:00:00Z", distance=20_000, total_elevation_gain=400),
+    ]
+    overview = build_weekly(activities, now=NOW)
+
+    # Only 1 of the 5 previous weeks has activity (20km); the other 4 count
+    # as 0, per the "zero weeks still count in the average" rule.
+    assert overview.avg_distance_m == 20_000 / 5
+    assert overview.avg_elevation_m == 400 / 5
+    assert overview.current_week.distance_m == 999_000
+
+
+def test_build_weekly_empty_activities_returns_six_weeks_of_zeros():
+    overview = build_weekly([], now=NOW)
+    assert len(overview.weeks) == 6
+    for week in overview.weeks:
+        assert week.distance_m == 0
+        assert week.elevation_m == 0
+        assert week.activity_count == 0
+        assert week.avg_heartrate_bpm is None
+    assert overview.avg_distance_m == 0
+    assert overview.avg_elevation_m == 0
+    assert overview.avg_heartrate_bpm is None
+    assert overview.total_activities == 0
+    assert overview.date_range_start == date(2026, 7, 13)
+    assert overview.date_range_end == date(2026, 8, 23)
 
 
 if __name__ == "__main__":

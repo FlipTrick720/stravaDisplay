@@ -1,12 +1,13 @@
-"""Aggregate Strava activities into overview data.
+"""Aggregate Strava activities into overview and weekly-comparison data.
 
 - Categorizes activities into Road/MTB/Ski/Hike/Other
 - Determines the 2 most-recently-used categories
 - Aggregates YTD stats per category
 - Collects polylines per category (with outlier filtering)
+- Buckets activities (all sport types) into the last 6 ISO weeks
 """
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import NamedTuple
 import polyline as pl
 
@@ -204,6 +205,134 @@ def build_overview(activities: list[dict], year: int | None = None) -> Overview:
         year=year,
         categories=category_stats,
         last_activity=activities[0],
+    )
+
+
+# =========================
+# Weekly comparison
+# =========================
+
+class WeekStats(NamedTuple):
+    iso_week: int
+    year: int
+    start_date: date          # Monday
+    end_date: date            # Sunday
+    distance_m: float
+    elevation_m: float
+    moving_time_s: int
+    avg_heartrate_bpm: float | None
+    activity_count: int
+    days_with_activity: int
+    is_current: bool
+
+
+class WeeklyOverview(NamedTuple):
+    weeks: list[WeekStats]        # 6 entries, oldest first
+    current_week: WeekStats       # alias for weeks[-1]
+    avg_distance_m: float         # avg across the 5 previous COMPLETED weeks
+    avg_elevation_m: float
+    avg_heartrate_bpm: float | None
+    total_distance_m: float       # sum across all 6 weeks
+    total_elevation_m: float
+    total_activities: int
+    date_range_start: date        # Monday of the oldest week
+    date_range_end: date          # Sunday of the current week
+
+
+def _local_date(iso: str) -> date:
+    """Calendar date from a Strava start_date_local timestamp.
+
+    start_date_local carries local wall-clock numbers with a 'Z' suffix (a
+    documented Strava API quirk, not a real UTC timestamp) - see
+    renderer._format_date for the same convention. We only ever read the
+    date/time fields off it and never convert its timezone.
+    """
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).date()
+
+
+def _monday_of(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def build_weekly(activities: list[dict], now: datetime | None = None) -> WeeklyOverview:
+    """Bucket activities into the last 6 ISO weeks (Monday-Sunday), including
+    the current, in-progress week. All sport types are included - unlike
+    build_overview, there is no category filtering here.
+    """
+    today = (now or datetime.now()).date()
+    current_monday = _monday_of(today)
+    mondays = [current_monday - timedelta(weeks=i) for i in range(5, -1, -1)]
+
+    buckets: dict[date, list[dict]] = {monday: [] for monday in mondays}
+    for act in activities:
+        raw = act.get("start_date_local") or act.get("start_date")
+        if not raw:
+            continue
+        monday = _monday_of(_local_date(raw))
+        if monday in buckets:
+            buckets[monday].append(act)
+
+    weeks: list[WeekStats] = []
+    for i, monday in enumerate(mondays):
+        acts = buckets[monday]
+        iso_year, iso_week, _ = monday.isocalendar()
+
+        hr_weighted_sum = 0.0
+        hr_weight = 0
+        days = set()
+        for act in acts:
+            hr = act.get("average_heartrate")
+            if hr:
+                weight = act.get("moving_time", 0)
+                hr_weighted_sum += hr * weight
+                hr_weight += weight
+            days.add(_local_date(act.get("start_date_local") or act.get("start_date")))
+
+        weeks.append(WeekStats(
+            iso_week=iso_week,
+            year=iso_year,
+            start_date=monday,
+            end_date=monday + timedelta(days=6),
+            distance_m=sum(a.get("distance", 0) for a in acts),
+            elevation_m=sum(a.get("total_elevation_gain", 0) for a in acts),
+            moving_time_s=sum(a.get("moving_time", 0) for a in acts),
+            avg_heartrate_bpm=(hr_weighted_sum / hr_weight) if hr_weight else None,
+            activity_count=len(acts),
+            days_with_activity=len(days),
+            is_current=(i == len(mondays) - 1),
+        ))
+
+    current_week = weeks[-1]
+    previous_weeks = weeks[:-1]  # 5 previous COMPLETED weeks
+    previous_mondays = mondays[:-1]
+
+    avg_distance_m = sum(w.distance_m for w in previous_weeks) / len(previous_weeks)
+    avg_elevation_m = sum(w.elevation_m for w in previous_weeks) / len(previous_weeks)
+
+    # Weighted directly over the underlying activities (not over per-week
+    # averages) so weeks mixing HR and non-HR activities don't get diluted.
+    hr_weighted_sum = 0.0
+    hr_weight = 0
+    for monday in previous_mondays:
+        for act in buckets[monday]:
+            hr = act.get("average_heartrate")
+            if hr:
+                weight = act.get("moving_time", 0)
+                hr_weighted_sum += hr * weight
+                hr_weight += weight
+    avg_heartrate_bpm = (hr_weighted_sum / hr_weight) if hr_weight else None
+
+    return WeeklyOverview(
+        weeks=weeks,
+        current_week=current_week,
+        avg_distance_m=avg_distance_m,
+        avg_elevation_m=avg_elevation_m,
+        avg_heartrate_bpm=avg_heartrate_bpm,
+        total_distance_m=sum(w.distance_m for w in weeks),
+        total_elevation_m=sum(w.elevation_m for w in weeks),
+        total_activities=sum(w.activity_count for w in weeks),
+        date_range_start=weeks[0].start_date,
+        date_range_end=current_week.end_date,
     )
 
 

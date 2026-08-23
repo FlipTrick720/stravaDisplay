@@ -16,7 +16,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
@@ -25,8 +25,8 @@ from PIL import Image, ImageDraw, ImageFont
 import aggregator
 import config as config_store  # aliased: `config` is the upload field name below
 import error_messages
-import renderer
 import strava_client
+from views import render_dashboard, render_error, render_overview, render_weekly
 
 logging.basicConfig(
     level=logging.INFO,
@@ -103,14 +103,19 @@ def _render_error_for_exception(exc: Exception) -> Image.Image:
         category = "generic"
 
     heading, message = error_messages.get_error(category)
-    return renderer.render_error(
+    return render_error(
         error_message=message, heading=heading, technical_details=tech,
     )
 
 
 def _render_weekly() -> bytes:
-    # Placeholder until Phase 2 builds the real bar-chart view.
-    return _centered_text_png("WEEKLY VIEW - COMING SOON")
+    client = strava_client.StravaClient()
+    six_weeks_ago = datetime.now() - timedelta(weeks=6)
+    activities = client.activities_since(int(six_weeks_ago.timestamp()), per_page=100)
+    overview = aggregator.build_weekly(activities)
+    athlete = client.athlete()
+    name = f"{athlete['firstname']} {athlete['lastname']}"
+    return _to_png(render_weekly(overview, name, datetime.now()))
 
 
 def _render_overview() -> bytes:
@@ -122,7 +127,7 @@ def _render_overview() -> bytes:
     overview = aggregator.build_overview(activities)
     athlete = client.athlete()
     name = f"{athlete['firstname']} {athlete['lastname']}"
-    return _to_png(renderer.render_overview(overview, name))
+    return _to_png(render_overview(overview, name))
 
 
 def _render_activity() -> bytes:
@@ -133,12 +138,12 @@ def _render_activity() -> bytes:
     activity_id = activities[0]["id"]
     activity = client.activity(activity_id)
     streams = client.activity_streams(activity_id)
-    return _to_png(renderer.render_dashboard(activity, streams))
+    return _to_png(render_dashboard(activity, streams))
 
 
 def _render_error_view(category: str) -> bytes:
     heading, message = error_messages.get_error(category)
-    img = renderer.render_error(
+    img = render_error(
         error_message=message,
         heading=heading,
         technical_details=f"Category: {category} (pre-rendered)",

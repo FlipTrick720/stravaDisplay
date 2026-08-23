@@ -104,6 +104,58 @@ def test_build_overview_empty_raises():
         build_overview([])
 
 
+def test_build_overview_year_totals_cover_all_categories():
+    """year_total_* must sum ALL activities, including categories that don't
+    make the 2-panel cut (Ski here is neither of the top 2)."""
+    activities = [
+        _act("MountainBikeRide", "2026-08-15T10:00:00Z",
+             distance=10000, total_elevation_gain=100, moving_time=1800),
+        _act("Ride", "2026-08-14T10:00:00Z",
+             distance=15000, total_elevation_gain=200, moving_time=2700),
+        _act("BackcountrySki", "2026-01-15T10:00:00Z",
+             distance=5000, total_elevation_gain=500, moving_time=3600),
+    ]
+    overview = build_overview(activities, year=2026)
+
+    cats = [c.category for c in overview.categories]
+    assert "Ski" not in cats  # sanity: confirms the totals aren't just panel totals
+
+    assert overview.year_total_distance_m == 30000
+    assert overview.year_total_elevation_m == 800
+    assert overview.year_total_time_s == 8100
+    assert overview.year_total_activities == 3
+
+
+def test_build_overview_date_range_start_of_year():
+    activities = [_act("MountainBikeRide", "2026-08-15T10:00:00Z")]
+    overview = build_overview(activities, year=2026)
+    assert overview.date_range_start_of_year == date(2026, 1, 1)
+
+    overview_default_year = build_overview(activities)
+    assert overview_default_year.date_range_start_of_year.month == 1
+    assert overview_default_year.date_range_start_of_year.day == 1
+
+
+def test_build_overview_category_stats_track_counts_and_shown_range():
+    """total_polylines is the YTD count before filtering; shown_date_start/end
+    bracket just the activities behind the (possibly filtered) `polylines`."""
+    activities = [
+        _act("MountainBikeRide", "2026-08-15T10:00:00Z",
+             map={"summary_polyline": "poly_a"}),
+        _act("MountainBikeRide", "2026-08-01T10:00:00Z",
+             map={"summary_polyline": "poly_b"}),
+        _act("MountainBikeRide", "2026-07-20T10:00:00Z", map={"summary_polyline": ""}),
+    ]
+    overview = build_overview(activities)
+    mtb = next(c for c in overview.categories if c.category == "MTB")
+
+    assert mtb.count == 3               # all MTB activities, incl. the one with no track
+    assert mtb.total_polylines == 2     # only the 2 with a summary_polyline
+    assert len(mtb.polylines) == 2       # too few tracks to trigger cluster filtering
+    assert mtb.shown_date_start == date(2026, 8, 1)
+    assert mtb.shown_date_end == date(2026, 8, 15)
+
+
 # =========================
 # build_weekly
 # =========================

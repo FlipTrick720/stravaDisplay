@@ -127,7 +127,7 @@ def _render_overview() -> bytes:
     overview = aggregator.build_overview(activities)
     athlete = client.athlete()
     name = f"{athlete['firstname']} {athlete['lastname']}"
-    return _to_png(render_overview(overview, name))
+    return _to_png(render_overview(overview, name, datetime.now()))
 
 
 def _render_activity() -> bytes:

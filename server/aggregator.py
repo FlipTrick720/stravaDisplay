@@ -37,13 +37,23 @@ class CategoryStats(NamedTuple):
     distance_m: float
     elevation_m: float
     moving_time_s: int
-    polylines: list[str]
+    polylines: list[str]          # filtered/shown subset - what render_map draws
+    total_polylines: int          # all polylines for this category YTD, before filtering
+    shown_distance_m: float       # distance of just the activities behind `polylines`
+    shown_elevation_m: float      # elevation of just the activities behind `polylines`
+    shown_date_start: date | None  # earliest activity date among `polylines`
+    shown_date_end: date | None    # latest activity date among `polylines`
 
 
 class Overview(NamedTuple):
     year: int
     categories: list[CategoryStats]
     last_activity: dict
+    year_total_distance_m: float     # across ALL categories YTD, not just the 2 shown
+    year_total_elevation_m: float
+    year_total_time_s: int
+    year_total_activities: int
+    date_range_start_of_year: date   # always Jan 1 of `year`
 
 
 def categorize(activity: dict) -> str:
@@ -93,44 +103,52 @@ def _filter_outlier_polylines(polylines: list[str], max_km_from_median: float = 
     return filtered or polylines
 
 
-def _filter_dominant_cluster(polylines: list[str], cell_size_deg: float = 0.2) -> list[str]:
-    """Keep only polylines whose center is in the densest 3x3 grid area.
+def _filter_dominant_cluster(items: list, key=lambda item: item, cell_size_deg: float = 0.2) -> list:
+    """Keep only items whose polyline center is in the densest 3x3 grid area.
+
+    `items` defaults to a list of polyline strings (`key` is the identity);
+    pass activity dicts with `key=lambda a: a["map"]["summary_polyline"]` to
+    filter activities instead and keep their distance/elevation/date alongside
+    the polyline that survived filtering.
 
     cell_size_deg: 0.2 deg ~= 22 km. So we group tracks by ~20km cells,
     then keep only the ones in the top cell + its 8 neighbors.
     """
-    if len(polylines) < 5:
-        return polylines
+    if len(items) < 5:
+        return items
 
-    # Bucket polylines by (lat_cell, lon_cell)
-    buckets: dict[tuple[int, int], list[str]] = defaultdict(list)
-    centers: dict[str, tuple[float, float]] = {}
+    # Bucket items by (lat_cell, lon_cell)
+    buckets: dict[tuple[int, int], list] = defaultdict(list)
+    centers: dict[int, tuple[float, float]] = {}  # keyed by id(item)
 
-    for poly in polylines:
-        center = _polyline_center(poly)
+    for item in items:
+        center = _polyline_center(key(item))
         if center is None:
             continue
-        centers[poly] = center
+        centers[id(item)] = center
         lat_cell = int(center[0] / cell_size_deg)
         lon_cell = int(center[1] / cell_size_deg)
-        buckets[(lat_cell, lon_cell)].append(poly)
+        buckets[(lat_cell, lon_cell)].append(item)
 
     if not buckets:
-        return polylines
+        return items
 
     # Find the densest cell
     top_cell = max(buckets.keys(), key=lambda k: len(buckets[k]))
     top_lat, top_lon = top_cell
 
-    # Keep polylines whose center is in top cell OR its 8 neighbors
+    # Keep items whose center is in top cell OR its 8 neighbors
     kept = []
-    for poly, (lat, lon) in centers.items():
-        lat_cell = int(lat / cell_size_deg)
-        lon_cell = int(lon / cell_size_deg)
+    for item in items:
+        center = centers.get(id(item))
+        if center is None:
+            continue
+        lat_cell = int(center[0] / cell_size_deg)
+        lon_cell = int(center[1] / cell_size_deg)
         if abs(lat_cell - top_lat) <= 1 and abs(lon_cell - top_lon) <= 1:
-            kept.append(poly)
+            kept.append(item)
 
-    return kept or polylines
+    return kept or items
 
 
 def build_overview(activities: list[dict], year: int | None = None) -> Overview:
@@ -182,14 +200,19 @@ def build_overview(activities: list[dict], year: int | None = None) -> Overview:
     category_stats: list[CategoryStats] = []
     for cat in recent_categories:
         acts = by_category.get(cat, [])
-        polylines_raw = [
-            a["map"]["summary_polyline"]
-            for a in acts
-            if a.get("map", {}).get("summary_polyline")
+        acts_with_polyline = [
+            a for a in acts if a.get("map", {}).get("summary_polyline")
         ]
         MAX_POLYLINES_PER_CAT = 15
-        recent_polylines = polylines_raw[:MAX_POLYLINES_PER_CAT]
-        polylines_filtered = _filter_dominant_cluster(recent_polylines)
+        recent_acts = acts_with_polyline[:MAX_POLYLINES_PER_CAT]
+        shown_acts = _filter_dominant_cluster(
+            recent_acts, key=lambda a: a["map"]["summary_polyline"],
+        )
+
+        shown_dates = [
+            _local_date(a.get("start_date_local") or a["start_date"])
+            for a in shown_acts
+        ]
 
         stats = CategoryStats(
             category=cat,
@@ -197,7 +220,12 @@ def build_overview(activities: list[dict], year: int | None = None) -> Overview:
             distance_m=sum(a.get("distance", 0) for a in acts),
             elevation_m=sum(a.get("total_elevation_gain", 0) for a in acts),
             moving_time_s=sum(a.get("moving_time", 0) for a in acts),
-            polylines=polylines_filtered,
+            polylines=[a["map"]["summary_polyline"] for a in shown_acts],
+            total_polylines=len(acts_with_polyline),
+            shown_distance_m=sum(a.get("distance", 0) for a in shown_acts),
+            shown_elevation_m=sum(a.get("total_elevation_gain", 0) for a in shown_acts),
+            shown_date_start=min(shown_dates) if shown_dates else None,
+            shown_date_end=max(shown_dates) if shown_dates else None,
         )
         category_stats.append(stats)
 
@@ -205,6 +233,11 @@ def build_overview(activities: list[dict], year: int | None = None) -> Overview:
         year=year,
         categories=category_stats,
         last_activity=activities[0],
+        year_total_distance_m=sum(a.get("distance", 0) for a in activities),
+        year_total_elevation_m=sum(a.get("total_elevation_gain", 0) for a in activities),
+        year_total_time_s=sum(a.get("moving_time", 0) for a in activities),
+        year_total_activities=len(activities),
+        date_range_start_of_year=date(year, 1, 1),
     )
 
 
@@ -348,14 +381,16 @@ if __name__ == "__main__":
     print(f"Total activities fetched: {len(activities)}")
     print(f"\nTop 2 recent categories:")
     for stats in overview.categories:
-        raw_count = sum(
-            1 for a in activities
-            if categorize(a) == stats.category and a.get("map", {}).get("summary_polyline")
-        )
         print(f"  {stats.category:10s} "
               f"{stats.count:3d} rides, "
               f"{stats.distance_m/1000:6.1f} km, "
               f"{int(stats.elevation_m):5d} hm, "
               f"{stats.moving_time_s/3600:5.1f} h "
-              f"({len(stats.polylines)}/{raw_count} polylines after outlier filter)")
+              f"({len(stats.polylines)}/{stats.total_polylines} polylines shown, "
+              f"{stats.shown_date_start}..{stats.shown_date_end})")
     print(f"\nLast activity: {overview.last_activity['name']}")
+    print(f"\nYear total: {overview.year_total_distance_m/1000:.1f} km, "
+          f"{int(overview.year_total_elevation_m)} hm, "
+          f"{overview.year_total_time_s/3600:.1f} h, "
+          f"{overview.year_total_activities} activities "
+          f"since {overview.date_range_start_of_year}")

@@ -136,9 +136,14 @@ class StravaClient:
         return all_activities
 
     def activity_streams(self, activity_id: int, keys: list[str] | None = None) -> dict:
-        """Get stream data (altitude, distance, etc.) for an activity."""
+        """Get stream data (altitude, distance, heartrate) for an activity.
+
+        heartrate is omitted from the response entirely (not a zeroed/empty
+        entry) for activities recorded without a HR sensor - callers must
+        treat streams.get("heartrate") as optional.
+        """
         if keys is None:
-            keys = ["altitude", "distance"]
+            keys = ["altitude", "distance", "heartrate"]
         return self._get(
             f"/activities/{activity_id}/streams",
             params={"keys": ",".join(keys), "key_by_type": "true"},

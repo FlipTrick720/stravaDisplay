@@ -138,7 +138,9 @@ def _render_activity() -> bytes:
     activity_id = activities[0]["id"]
     activity = client.activity(activity_id)
     streams = client.activity_streams(activity_id)
-    return _to_png(render_dashboard(activity, streams))
+    athlete = client.athlete()
+    name = f"{athlete['firstname']} {athlete['lastname']}"
+    return _to_png(render_dashboard(activity, streams, name, datetime.now()))
 
 
 def _render_error_view(category: str) -> bytes:

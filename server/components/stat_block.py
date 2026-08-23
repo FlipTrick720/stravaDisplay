@@ -44,10 +44,15 @@ def render_stat_block(
     delta: str | None = None,
     value_size: int = VALUE_SIZE,
     label_size: int = LABEL_SIZE,
+    unit_size: int | None = None,
 ) -> None:
     """Draw label/value/unit/delta stacked at the top-left of `box`.
 
     The value shrinks (never grows) if value+unit would overflow the box width.
+
+    unit_size overrides the unit's auto-scaled size (value_size * UNIT_RATIO,
+    which shrinks below legibility for small value_size - e.g. a heart glyph
+    next to a small KUDOS count). Leave it None for the normal km/hm/bpm case.
     """
     x0, y0, x1, y1 = box
     width = x1 - x0
@@ -63,10 +68,10 @@ def render_stat_block(
 
     # --- value + unit, sharing one baseline ---
     unit_text = unit.upper() if unit else ""
-    unit_size = max(8, int(round(value_size * UNIT_RATIO)))
+    auto_unit_size = unit_size if unit_size is not None else max(8, int(round(value_size * UNIT_RATIO)))
     reserved = 0.0
     if unit_text:
-        reserved = tracked_width(draw, unit_text, font(unit_size, bold=True), 0.5) + UNIT_GAP
+        reserved = tracked_width(draw, unit_text, font(auto_unit_size, bold=True), 0.5) + UNIT_GAP
 
     value_font = fit_font(draw, value, width - reserved, value_size, bold=True)
     value_top = label_bottom + LABEL_TO_VALUE_GAP
@@ -76,11 +81,13 @@ def render_stat_block(
     x = x0 + draw.textlength(value, font=value_font)
 
     if unit_text:
-        # unit size follows the value's *actual* size after any shrink
-        unit_size = max(8, int(round(value_font.size * UNIT_RATIO)))
+        # unit size follows the value's *actual* size after any shrink, unless
+        # the caller pinned an explicit size
+        if unit_size is None:
+            auto_unit_size = max(8, int(round(value_font.size * UNIT_RATIO)))
         draw_tracked(
             draw, (x + UNIT_GAP, baseline), unit_text,
-            font(unit_size, bold=True), BLACK, 0.5, anchor="ls",
+            font(auto_unit_size, bold=True), BLACK, 0.5, anchor="ls",
         )
 
     # --- delta ---

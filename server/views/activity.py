@@ -1,180 +1,354 @@
 """Activity detail view: single-track map + stats + elevation profile.
 
-Moved verbatim out of renderer.py (Phase 2 Step 2) - the shared drawing
-helpers (_font, _project_polyline, _draw_cities, ...) and the WIDTH/HEIGHT
-layout constants still live in renderer.py and are used here as
-`renderer.<name>`. This is a straight move, not a refactor: Step 3 rebuilds
-this view on top of the components/ package and drops the renderer.*
-indirection then.
+Rebuilt on the components/ package (Phase 2 Step 4), replacing the Step
+1/2-era code that was moved out of renderer.py as-is. Last of the three
+views to be composed this way (weekly.py in Step 2, overview.py in Step 3).
+
+Layout measured off designActivity.png:
+- header (48px, components.header) - sub-header row (58px: LETZTE AKTIVITÄT
+  + name on the left, category badge + weekday date on the right, no
+  separating rule against the header) - a full-width rule, then the main
+  content block (map + 4 stacked stat_blocks on the right, sub-stats row
+  below the map only, bottom-aligned with the stat column) - a full-width
+  rule - the elevation profile filling the rest
+- the map column is ~65% width per this step's instructions (the mock's own
+  ratio is closer to ~72%, but 65/35 leaves the stat column enough room for
+  "42,1 KM"-sized text without being cramped)
 """
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import polyline as pl
 from PIL import Image, ImageDraw
 
-import renderer
+if __package__ in (None, ""):  # `python3 views/activity.py` direct execution
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# =========================
-# Layout A: latest activity
-# =========================
+import aggregator
+from components.badge import badge_size, render_badge
+from components.base import (
+    BLACK, WHITE, draw_tracked, font, format_number, tracked_width,
+)
+from components.elevation import render_elevation
+from components.header import render_header
+from components.map_view import MapMarker, render_map
+from components.stat_block import render_stat_block
 
-def _draw_activity_header(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    title = activity["name"][:45]
-    draw.text((renderer.MAP_MARGIN, 10), title, font=renderer._font(22, bold=True), fill=0)
-    draw.text((renderer.MAP_MARGIN, 36), renderer._format_date(activity["start_date_local"]),
-              font=renderer._font(14), fill=0)
-    draw.line([(0, renderer.HEADER_HEIGHT), (renderer.WIDTH, renderer.HEADER_HEIGHT)], fill=0, width=1)
+WIDTH, HEIGHT = 800, 480
+HEADER_HEIGHT = 48
+SUBHEADER_HEIGHT = 58
+MAIN_CONTENT_Y1 = 366  # header + subheader + main content = 48 + 58 + 260
+ELEVATION_Y0 = MAIN_CONTENT_Y1
 
+MARGIN_LEFT = 17
+MARGIN_RIGHT = 15
 
-def _draw_kudos_badge(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    """Draw kudos count as a badge in the top-right of the header area."""
-    kudos = activity.get("kudos_count", 0)
-    if kudos == 0:
-        return  # no badge if no kudos
+MAP_COLUMN_X1 = 530          # ~65% of 800
+STAT_COLUMN_X0 = 546
 
-    text = f"{kudos}"
-    label = "KUDOS"
+SUBSTATS_HEIGHT = 47          # bottom band of the left column, under the map
+SUBSTATS_Y1 = MAIN_CONTENT_Y1
+SUBSTATS_Y0 = SUBSTATS_Y1 - SUBSTATS_HEIGHT
 
-    # Position: top-right, inside header area
-    x_right = renderer.WIDTH - renderer.MAP_MARGIN
-    y_top = 8
+STAT_ROW_COUNT = 4
+SUB_STAT_VALUE_SIZE = 26
+SUB_STAT_COL_GAP = 10
 
-    # Draw label small above the number
-    label_font = renderer._font(11, bold=True)
-    number_font = renderer._font(28, bold=True)
+SUBHEADER_LABEL_SIZE = 9
+SUBHEADER_LABEL_TRACKING = 1.5
+ACTIVITY_NAME_SIZE = 22
+DATE_LABEL_SIZE = 10
+DATE_LABEL_TRACKING = 1.5
 
-    # Measure label so we can right-align
-    label_bbox = draw.textbbox((0, 0), label, font=label_font)
-    label_w = label_bbox[2] - label_bbox[0]
-    number_bbox = draw.textbbox((0, 0), text, font=number_font)
-    number_w = number_bbox[2] - number_bbox[0]
+WEEKDAY_DE = ["MO", "DI", "MI", "DO", "FR", "SA", "SO"]  # date.weekday(): Mon=0
 
-    # Heart symbol (small triangle-ish shape done with polygon)
-    # We use ♥ from font, DejaVu supports it
-    heart = "♥"
-    heart_font = renderer._font(20)
-    heart_bbox = draw.textbbox((0, 0), heart, font=heart_font)
-    heart_w = heart_bbox[2] - heart_bbox[0]
+KUDOS_HEART = "❤"  # U+2764, confirmed to render as a filled heart in DejaVu Sans
 
-    # Layout: KUDOS
-    #         ♥ 42
-    # Right-aligned
-    total_w = number_w + heart_w + 4
-    x_number = x_right - total_w
-    x_heart = x_number + number_w + 4
-
-    # Label above (centered above the number+heart cluster)
-    x_label = x_right - label_w - 2
-    draw.text((x_label, y_top), label, font=label_font, fill=0)
-
-    # Number + heart on same baseline below label
-    draw.text((x_number, y_top + 14), text, font=number_font, fill=0)
-    draw.text((x_heart, y_top + 18), heart, font=heart_font, fill=0)
+# Round-trip marker handling: if start/end fall within this fraction of the
+# track's own bounding box, they're close enough to be visually the same
+# point (a filled disc under a hollow square would erase the disc). Nudging
+# by a fraction of the box's span keeps both markers visible at any zoom
+# level without needing to replicate render_map's pixel projection here.
+ROUND_TRIP_THRESHOLD = 0.05
+ROUND_TRIP_OFFSET = 0.035
 
 
-def _draw_activity_track(img: Image.Image, activity: dict) -> None:
-    """Draw single activity polyline in the left panel with map context."""
-    draw = ImageDraw.Draw(img)
-    poly = activity.get("map", {}).get("summary_polyline")
-    box = (renderer.MAP_MARGIN, renderer.HEADER_HEIGHT + renderer.MAP_MARGIN,
-           renderer.MAP_WIDTH - renderer.MAP_MARGIN, renderer.HEIGHT - renderer.FOOTER_HEIGHT - renderer.MAP_MARGIN)
+def _parse_local(iso: str) -> datetime:
+    """start_date_local carries local wall-clock numbers with a 'Z' suffix -
+    a documented Strava API quirk. Never convert its timezone, just read the
+    fields off it (matches aggregator._local_date's convention)."""
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
-    if not poly:
-        draw.rectangle(box, outline=0, width=1)
-        draw.text(
-            ((box[0] + box[2]) // 2 - 60, (box[1] + box[3]) // 2 - 10),
-            "no GPS track", font=renderer._font(16), fill=0,
-        )
-        return
 
-    points = pl.decode(poly)
-    # Padded bounds so cities near track edges still show
+def _format_duration_short(seconds: int) -> str:
+    h = int(seconds) // 3600
+    m = (int(seconds) % 3600) // 60
+    return f"{h}:{m:02d}"
+
+
+def _display_name(name: str) -> str:
+    """Title-case an all-caps name; leave already mixed-case names alone."""
+    return name.title() if name.isupper() else name
+
+
+def _hr_value(activity: dict, key: str) -> tuple[str, str | None]:
+    value = activity.get(key)
+    return (format_number(value), "bpm") if value else ("-", None)
+
+
+def _calories_value(activity: dict) -> tuple[str, str | None]:
+    calories = activity.get("calories")
+    return (format_number(calories), "kcal") if calories is not None else ("-", None)
+
+
+def _prepare_markers(points: list[tuple[float, float]], start_label: str,
+                      ziel_label: str) -> list[MapMarker]:
+    """START/ZIEL markers, nudging ZIEL apart from START for a round trip."""
+    start_lat, start_lon = points[0]
+    end_lat, end_lon = points[-1]
+
     lats = [p[0] for p in points]
     lons = [p[1] for p in points]
-    pad_lat = (max(lats) - min(lats)) * 0.15 or 0.02
-    pad_lon = (max(lons) - min(lons)) * 0.15 or 0.02
-    bounds = (min(lats) - pad_lat, max(lats) + pad_lat,
-              min(lons) - pad_lon, max(lons) + pad_lon)
+    lat_span = max(lats) - min(lats) or 0.001
+    lon_span = max(lons) - min(lons) or 0.001
 
-    # Cities under the track
-    renderer._draw_cities(img, box, bounds, max_cities=4)
+    is_round_trip = (
+        abs(end_lat - start_lat) / lat_span < ROUND_TRIP_THRESHOLD
+        and abs(end_lon - start_lon) / lon_span < ROUND_TRIP_THRESHOLD
+    )
+    if is_round_trip:
+        end_lat += lat_span * ROUND_TRIP_OFFSET
+        end_lon += lon_span * ROUND_TRIP_OFFSET
 
-    # Track on top
-    pixels = renderer._project_polyline(points, box, bounds)
-    for offset in [(0, 0), (1, 0), (0, 1), (1, 1)]:
-        shifted = [(x + offset[0], y + offset[1]) for x, y in pixels]
-        draw.line(shifted, fill=0, width=1)
-
-    # Map context overlays
-    renderer._draw_compass(draw, box)
-    renderer._draw_scale_bar(draw, box, bounds)
-
-
-def _draw_activity_stats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    stats = [
-        ("DISTANZ", f"{activity['distance'] / 1000:.1f} km"),
-        ("HÖHE", f"{int(activity.get('total_elevation_gain', 0))} hm"),
-        ("ZEIT", renderer._format_duration(int(activity.get('moving_time', 0)))),
-        ("Ø SPEED", f"{activity.get('average_speed', 0) * 3.6:.1f} km/h"),
+    return [
+        MapMarker(start_lat, start_lon, start_label, True),
+        MapMarker(end_lat, end_lon, ziel_label, True),
     ]
-    y = renderer.HEADER_HEIGHT + 30
-    for label, value in stats:
-        draw.text((renderer.STATS_X, y), label, font=renderer._font(14), fill=0)
-        draw.text((renderer.STATS_X, y + 18), value, font=renderer._font(32, bold=True), fill=0)
-        y += 80
 
 
-def _draw_elevation_profile(
-    draw: ImageDraw.ImageDraw,
-    streams: dict | None,
+def _render_subheader(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+    y0 = HEADER_HEIGHT
+
+    label_font = font(SUBHEADER_LABEL_SIZE)
+    label_cap_top = label_font.getbbox("M")[1]
+    draw_tracked(draw, (MARGIN_LEFT, y0 + 8 - label_cap_top), "LETZTE AKTIVITÄT",
+                label_font, BLACK, SUBHEADER_LABEL_TRACKING)
+
+    category = aggregator.categorize(activity)
+    local_dt = _parse_local(activity["start_date_local"])
+    date_text = f"{WEEKDAY_DE[local_dt.weekday()]} {local_dt:%d.%m.%Y}"
+
+    date_font = font(DATE_LABEL_SIZE)
+    date_w = tracked_width(draw, date_text, date_font, DATE_LABEL_TRACKING)
+    badge_w, _ = badge_size(draw, category)
+
+    badge_top = y0 + 20
+    badge_x0 = WIDTH - MARGIN_RIGHT - date_w - 10 - badge_w
+    badge_box = render_badge(draw, (badge_x0, badge_top), category)
+
+    row_mid = (badge_box[1] + badge_box[3]) / 2
+    draw_tracked(draw, (badge_box[2] + 10, row_mid), date_text, date_font, BLACK,
+                DATE_LABEL_TRACKING, anchor="lm")
+
+    name_font = font(ACTIVITY_NAME_SIZE, bold=True)
+    full_name = _display_name(activity["name"])
+    name = full_name
+    max_width = badge_x0 - 10 - MARGIN_LEFT
+    while draw.textlength(name, font=name_font) > max_width and len(name) > 10:
+        name = name[:-1]
+    if name != full_name:
+        name = name.rstrip() + "…"
+    draw.text((MARGIN_LEFT, y0 + 22), name, font=name_font, fill=BLACK)
+
+
+def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+    box = (MARGIN_LEFT, HEADER_HEIGHT + SUBHEADER_HEIGHT + 8,
+           MAP_COLUMN_X1, SUBSTATS_Y0 - 6)
+
+    poly = activity.get("map", {}).get("polyline") or activity.get("map", {}).get("summary_polyline")
+    markers = None
+    if poly:
+        points = pl.decode(poly)
+        if points:
+            start_local = _parse_local(activity["start_date_local"])
+            elapsed = activity.get("elapsed_time") or activity.get("moving_time", 0)
+            ziel_local = start_local + timedelta(seconds=elapsed)
+            markers = _prepare_markers(
+                points,
+                f"START {start_local:%H:%M}",
+                f"ZIEL {ziel_local:%H:%M}",
+            )
+
+    render_map(draw, box, [poly] if poly else [], markers=markers)
+
+
+def _render_main_stats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+    y0 = HEADER_HEIGHT + SUBHEADER_HEIGHT
+    y1 = MAIN_CONTENT_Y1
+    x0, x1 = STAT_COLUMN_X0, WIDTH - MARGIN_RIGHT
+
+    stats = [
+        ("DISTANZ", format_number(activity["distance"] / 1000, 1), "km"),
+        ("HÖHE", format_number(activity.get("total_elevation_gain", 0)), "hm"),
+        ("ZEIT", _format_duration_short(activity.get("moving_time", 0)), "h"),
+        ("Ø SPEED", format_number(activity.get("average_speed", 0) * 3.6, 1), "km/h"),
+    ]
+
+    block_h = (y1 - y0) / STAT_ROW_COUNT
+    gap = 10
+    for i, (label, value, unit) in enumerate(stats):
+        block_y0 = y0 + i * block_h
+        block_y1 = block_y0 + block_h - gap
+        render_stat_block(draw, (x0, block_y0, x1, block_y1), label, value, unit)
+        if i > 0:
+            draw.line([(x0, block_y0 - gap / 2), (x1, block_y0 - gap / 2)],
+                      fill=BLACK, width=1)
+
+
+def _render_substats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+    x0, x1 = MARGIN_LEFT, MAP_COLUMN_X1
+    y0, y1 = SUBSTATS_Y0, SUBSTATS_Y1
+
+    avg_hr_value, avg_hr_unit = _hr_value(activity, "average_heartrate")
+    max_hr_value, max_hr_unit = _hr_value(activity, "max_heartrate")
+    cal_value, cal_unit = _calories_value(activity)
+    kudos = activity.get("kudos_count", 0)
+
+    # unit_size=None everywhere except KUDOS: the heart glyph needs a fixed
+    # legible size - the normal value_size*UNIT_RATIO scaling shrinks it to
+    # an illegible dot at this small value_size (26 * 0.30 = 8px).
+    cols = [
+        ("Ø PULS", avg_hr_value, avg_hr_unit, None),
+        ("MAX PULS", max_hr_value, max_hr_unit, None),
+        ("KALORIEN", cal_value, cal_unit, None),
+        ("KUDOS", str(kudos), KUDOS_HEART, 16),
+    ]
+    col_w = (x1 - x0) / len(cols)
+    for i, (label, value, unit, unit_size) in enumerate(cols):
+        col_x0 = x0 + i * col_w
+        col_x1 = col_x0 + col_w - SUB_STAT_COL_GAP
+        render_stat_block(draw, (col_x0, y0, col_x1, y1), label, value, unit,
+                          value_size=SUB_STAT_VALUE_SIZE, unit_size=unit_size)
+        if i > 0:
+            draw.line([(col_x0 - 5, y0), (col_x0 - 5, y1)], fill=BLACK, width=1)
+
+
+def _render_elevation_section(draw: ImageDraw.ImageDraw, streams: dict | None) -> None:
+    box = (MARGIN_LEFT, ELEVATION_Y0 + 10, WIDTH - MARGIN_RIGHT, HEIGHT - 6)
+
+    altitude = (streams or {}).get("altitude", {}).get("data") or []
+    distance = (streams or {}).get("distance", {}).get("data") or []
+    heartrate = (streams or {}).get("heartrate", {}).get("data") or None
+
+    if not altitude or not distance or len(altitude) < 2:
+        title_font = font(9)
+        cap_top = title_font.getbbox("M")[1]
+        draw_tracked(draw, (box[0], box[1] - cap_top), "HÖHENPROFIL", title_font,
+                    BLACK, 1.5)
+        msg_font = font(12)
+        draw.text(((box[0] + box[2]) / 2 - 60, (box[1] + box[3]) / 2 - 8),
+                  "Keine Höhendaten", font=msg_font, fill=BLACK)
+        return
+
+    render_elevation(draw, box, altitude, distance, heartrate)
+
+
+def render_dashboard(
     activity: dict,
-) -> None:
-    y_top = renderer.HEIGHT - renderer.FOOTER_HEIGHT
-    draw.line([(0, y_top), (renderer.WIDTH, y_top)], fill=0, width=1)
+    streams: dict | None = None,
+    athlete_name: str = "",
+    updated_at: datetime | None = None,
+) -> Image.Image:
+    """Single-activity detail view: map, stats, elevation profile.
 
-    if not streams or "altitude" not in streams or "distance" not in streams:
-        draw.text((renderer.MAP_MARGIN, y_top + 20), "Höhenprofil: n/a", font=renderer._font(14), fill=0)
-        return
-
-    altitudes = streams["altitude"]["data"]
-    distances = streams["distance"]["data"]
-    if len(altitudes) < 2:
-        return
-
-    plot_x0 = renderer.MAP_MARGIN
-    plot_x1 = renderer.WIDTH - renderer.MAP_MARGIN
-    plot_y0 = y_top + 12
-    plot_y1 = renderer.HEIGHT - 6
-    plot_w = plot_x1 - plot_x0
-    plot_h = plot_y1 - plot_y0
-
-    alt_min = min(altitudes)
-    alt_max = max(altitudes)
-    alt_range = alt_max - alt_min or 1.0
-    dist_max = distances[-1] or 1.0
-
-    points = []
-    for x in range(plot_w):
-        target_dist = (x / plot_w) * dist_max
-        idx = min(range(len(distances)), key=lambda i: abs(distances[i] - target_dist))
-        alt = altitudes[idx]
-        y = plot_y1 - int((alt - alt_min) / alt_range * plot_h)
-        points.append((plot_x0 + x, y))
-
-    polygon = points + [(plot_x1, plot_y1), (plot_x0, plot_y1)]
-    draw.polygon(polygon, fill=0)
-
-    draw.text((plot_x1 - 55, plot_y0 - 2), f"{int(alt_max)}m", font=renderer._font(11), fill=0)
-    draw.text((plot_x1 - 55, plot_y1 - 14), f"{int(alt_min)}m", font=renderer._font(11), fill=0)
-
-
-def render_dashboard(activity: dict, streams: dict | None = None) -> Image.Image:
-    img = Image.new("1", (renderer.WIDTH, renderer.HEIGHT), 1)
+    athlete_name defaults to "" for backward compatibility with the previous
+    2-arg call signature; the header component requires *some* name, but
+    every real caller (app.py) passes the athlete's actual name.
+    """
+    img = Image.new("1", (WIDTH, HEIGHT), WHITE)
     draw = ImageDraw.Draw(img)
 
-    _draw_activity_header(draw, activity)
-    _draw_kudos_badge(draw, activity)
-    _draw_activity_track(img, activity)
-    _draw_activity_stats(draw, activity)
-    _draw_elevation_profile(draw, streams, activity)
+    year = _parse_local(activity["start_date_local"]).year
+    render_header(draw, (0, 0, WIDTH, HEADER_HEIGHT), year, athlete_name, updated_at)
+
+    _render_subheader(draw, activity)
+
+    draw.line([(0, HEADER_HEIGHT + SUBHEADER_HEIGHT),
+               (WIDTH, HEADER_HEIGHT + SUBHEADER_HEIGHT)], fill=BLACK, width=1)
+
+    _render_map_column(draw, activity)
+    _render_main_stats(draw, activity)
+    _render_substats(draw, activity)
+
+    draw.line([(0, MAIN_CONTENT_Y1), (WIDTH, MAIN_CONTENT_Y1)], fill=BLACK, width=1)
+
+    _render_elevation_section(draw, streams)
 
     return img
 
+
+if __name__ == "__main__":
+    import math
+
+    def _fake_track(lat0, lon0, n=200, round_trip=False):
+        pts = []
+        for i in range(n):
+            t = i / n
+            forward = t if t < 0.5 or not round_trip else 1 - t
+            pts.append((
+                lat0 + 0.06 * forward + 0.01 * math.sin(t * 9 * math.pi),
+                lon0 + 0.18 * forward + 0.01 * math.cos(t * 7 * math.pi),
+            ))
+        return pl.encode(pts)
+
+    activity = {
+        "name": "NOCKSPITZE FEIERABENDRUNDE",
+        "sport_type": "MountainBikeRide",
+        "type": "MountainBikeRide",
+        "start_date": "2026-08-16T17:04:00Z",
+        "start_date_local": "2026-08-16T17:04:00Z",
+        "distance": 42100,
+        "total_elevation_gain": 980,
+        "moving_time": 2 * 3600 + 48 * 60,
+        "elapsed_time": 2 * 3600 + 48 * 60 + 16 * 60,
+        "average_speed": 42100 / (2 * 3600 + 48 * 60),
+        "average_heartrate": 142,
+        "max_heartrate": 178,
+        "calories": 1980,
+        "kudos_count": 42,
+        "map": {"summary_polyline": _fake_track(47.22, 11.28)},
+    }
+
+    n = 300
+    distance_stream = [i / (n - 1) * 42100 for i in range(n)]
+    altitude_stream = [
+        610 + 1330 * (0.5 - 0.5 * math.cos(i / n * 2.2 * math.pi)) ** 1.1
+        for i in range(n)
+    ]
+    heartrate_stream = [128 + 40 * (0.5 - 0.5 * math.cos((i + 30) / n * 2.1 * math.pi))
+                         for i in range(n)]
+    streams = {
+        "altitude": {"data": altitude_stream},
+        "distance": {"data": distance_stream},
+        "heartrate": {"data": heartrate_stream},
+    }
+
+    img = render_dashboard(activity, streams, "Malte Braig", datetime(2026, 8, 16, 19, 12))
+    out = Path(__file__).resolve().parent / "preview_activity.png"
+    img.save(out)
+    print(f"wrote {out}")
+
+    # No-HR / no-kudos / no-calories / round-trip / no-streams variant
+    activity_minimal = dict(activity)
+    activity_minimal["name"] = "Wanderung am Morgen"
+    activity_minimal["average_heartrate"] = None
+    activity_minimal["max_heartrate"] = None
+    activity_minimal["calories"] = None
+    activity_minimal["kudos_count"] = 0
+    activity_minimal["map"] = {"summary_polyline": _fake_track(47.2, 11.3, round_trip=True)}
+
+    img2 = render_dashboard(activity_minimal, None, "Malte Braig", datetime(2026, 8, 16, 19, 12))
+    out2 = Path(__file__).resolve().parent / "preview_activity_minimal.png"
+    img2.save(out2)
+    print(f"wrote {out2}")

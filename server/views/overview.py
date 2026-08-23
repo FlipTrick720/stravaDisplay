@@ -46,8 +46,9 @@ MARGIN_RIGHT = 15
 DIVIDER_X = 400
 PANEL_GAP = 16
 
-BOTTOM_ROW_HEIGHT = 84
+BOTTOM_ROW_HEIGHT = 96
 BOTTOM_ROW_Y0 = HEIGHT - BOTTOM_ROW_HEIGHT
+BOTTOM_MARGIN = 6  # whitespace kept below the lowest text, enforced by tests/test_overview_render.py
 
 PANEL_PAD_TOP = 8
 GAP_AFTER_BADGE = 10
@@ -206,9 +207,15 @@ def _render_bottom_right(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, in
     draw_tracked(draw, (x0, y0 - cap_top), f"JAHR {overview.year} · ALLE SPORTARTEN",
                 label_font, BLACK, BOTTOM_LABEL_TRACKING)
 
+    # Anchored off the actual footer string's ink bbox, not a single glyph's
+    # ("M" alone under-measured this string's ascent by 2px, which pushed the
+    # last row of ink 1px past the 480px canvas - silently dropped by PIL,
+    # not "clipped" in a visible sense, but zero margin either way).
     footer_font = font(BOTTOM_LABEL_SIZE)
-    footer_cap_top = footer_font.getbbox("M")[1]
-    footer_y = y1 - footer_cap_top
+    footer = (f"{overview.year_total_activities} AKTIVITÄTEN · "
+              f"SEIT {overview.date_range_start_of_year:%d.%m.%Y}")
+    footer_bbox = footer_font.getbbox(footer)
+    footer_origin_y = (y1 - BOTTOM_MARGIN) - footer_bbox[3]
 
     stats = [
         format_number(overview.year_total_distance_m / 1000),
@@ -217,7 +224,7 @@ def _render_bottom_right(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, in
     ]
     units = ["km", "hm", "h"]
     stat_y0 = y0 + 14
-    stat_y1 = footer_y - 14
+    stat_y1 = footer_origin_y - 14
     col_w = (x1 - x0) / 3
     for i, (value, unit) in enumerate(zip(stats, units)):
         col_x0 = x0 + i * col_w
@@ -225,9 +232,7 @@ def _render_bottom_right(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, in
         render_stat_block(draw, (col_x0, stat_y0, col_x1, stat_y1), "", value, unit,
                           value_size=BOTTOM_STAT_VALUE_SIZE)
 
-    footer = (f"{overview.year_total_activities} AKTIVITÄTEN · "
-              f"SEIT {overview.date_range_start_of_year:%d.%m.%Y}")
-    draw_tracked(draw, (x0, footer_y), footer, footer_font, BLACK,
+    draw_tracked(draw, (x0, footer_origin_y), footer, footer_font, BLACK,
                 BOTTOM_LABEL_TRACKING)
 
 
@@ -254,9 +259,9 @@ def render_overview(
     draw.rectangle([0, BOTTOM_ROW_Y0, WIDTH, BOTTOM_ROW_Y0 + 1], fill=BLACK)
 
     bottom_y0 = BOTTOM_ROW_Y0 + 12
-    _render_bottom_left(draw, (MARGIN_LEFT, bottom_y0, DIVIDER_X - PANEL_GAP, HEIGHT - 6),
+    _render_bottom_left(draw, (MARGIN_LEFT, bottom_y0, DIVIDER_X - PANEL_GAP, HEIGHT),
                         overview.last_activity)
-    _render_bottom_right(draw, (DIVIDER_X + PANEL_GAP, bottom_y0, WIDTH - MARGIN_RIGHT, HEIGHT - 6),
+    _render_bottom_right(draw, (DIVIDER_X + PANEL_GAP, bottom_y0, WIDTH - MARGIN_RIGHT, HEIGHT),
                          overview)
 
     return img

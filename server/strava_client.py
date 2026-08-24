@@ -8,11 +8,17 @@ Design:
 - Subsequent calls assume the cached token is valid.
 - If a call returns 401, we refresh once and retry (transparent to caller).
 - config.json is only ever written via config.save() (atomic).
+- Requests are throttled and 429s are retried once - see _throttle/_request.
+  Class-level state (not per-instance) since app.py creates a fresh
+  StravaClient() each refresh round; the budget must survive that.
 """
+import logging
 import time
 import requests
 
 import config
+
+log = logging.getLogger("strava_client")
 
 STRAVA_TOKEN_URL = "https://www.strava.com/api/v3/oauth/token"
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
@@ -21,12 +27,21 @@ STRAVA_API_BASE = "https://www.strava.com/api/v3"
 DEFAULT_TIMEOUT = 15
 TOKEN_REFRESH_TIMEOUT = 10
 
+# Strava's real cap is 100 requests / 15 min. Pausing at 80 leaves headroom
+# for a concurrent /admin/bootstrap-triggered refresh or a manual retry.
+RATE_LIMIT_SOFT_CAP = 80
+RATE_LIMIT_WINDOW_SECONDS = 900  # 15 min, also the 429-with-no-Retry-After fallback wait
+
 
 class StravaAuthError(Exception):
     """Raised when auth fails and cannot be recovered (bad refresh token, etc)."""
 
 
 class StravaClient:
+    # Class-level (shared across instances) request budget tracking.
+    _request_count = 0
+    _request_window_start = time.time()
+
     def __init__(self):
         self.cfg = config.load()
         # Refresh once at start if needed. All subsequent calls trust the token
@@ -73,18 +88,42 @@ class StravaClient:
         config.save(self.cfg)  # atomic write
 
     def _get(self, path: str, params: dict | None = None) -> dict | list:
-        """GET call against Strava API. Retries once on 401 (token expired mid-flight)."""
+        """GET call against Strava API. Retries once on 401 (token expired mid-flight)
+        and once on 429 (rate limited)."""
         return self._request("GET", path, params=params)
+
+    def _throttle(self) -> None:
+        """Preemptively pause if we're approaching Strava's 100-requests/15min cap.
+
+        Class-level counter: a fresh StravaClient() is created every refresh
+        round, so this has to survive across instances to mean anything.
+        """
+        cls = type(self)
+        if cls._request_count >= RATE_LIMIT_SOFT_CAP:
+            elapsed = time.time() - cls._request_window_start
+            if elapsed < RATE_LIMIT_WINDOW_SECONDS:
+                wait = RATE_LIMIT_WINDOW_SECONDS - elapsed
+                log.warning("Approaching Strava rate limit (%d requests this window), "
+                           "pausing %.0fs", cls._request_count, wait)
+                time.sleep(wait)
+            cls._request_count = 0
+            cls._request_window_start = time.time()
+        cls._request_count += 1
 
     def _request(
         self,
         method: str,
         path: str,
         params: dict | None = None,
-        _retried: bool = False,
+        _retried_auth: bool = False,
+        _retried_rate_limit: bool = False,
     ) -> dict | list:
-        """HTTP call with transparent token refresh on 401."""
+        """HTTP call with transparent token refresh on 401 and a single
+        wait-and-retry on 429."""
+        self._throttle()
+
         headers = {"Authorization": f"Bearer {self.cfg['strava']['access_token']}"}
+        log.info("Strava API call: %s %s", method, path)
         resp = requests.request(
             method,
             f"{STRAVA_API_BASE}{path}",
@@ -94,9 +133,20 @@ class StravaClient:
         )
 
         # If token was invalidated server-side (e.g. revoked), retry once with fresh token
-        if resp.status_code == 401 and not _retried:
+        if resp.status_code == 401 and not _retried_auth:
             self._do_refresh()
-            return self._request(method, path, params=params, _retried=True)
+            return self._request(method, path, params=params, _retried_auth=True,
+                                 _retried_rate_limit=_retried_rate_limit)
+
+        if resp.status_code == 429 and not _retried_rate_limit:
+            retry_after = resp.headers.get("Retry-After")
+            wait = float(retry_after) if retry_after and retry_after.isdigit() \
+                else RATE_LIMIT_WINDOW_SECONDS
+            log.warning("Strava rate limited (429) on %s %s, retrying in %.0fs",
+                       method, path, wait)
+            time.sleep(wait)
+            return self._request(method, path, params=params, _retried_auth=_retried_auth,
+                                 _retried_rate_limit=True)
 
         resp.raise_for_status()
         return resp.json()

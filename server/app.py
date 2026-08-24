@@ -4,9 +4,16 @@ The Pi fetches a PNG over HTTP and renders nothing. See CLAUDE.md
 "API-first rendering" for why.
 
 Views are NOT rendered per request. A background task re-renders everything
-every REFRESH_INTERVAL seconds into an in-memory cache, and request handlers
-just hand back cached bytes. This keeps the Pi's latency flat and keeps Strava
-API traffic constant regardless of how often the Pi polls.
+every CACHE_REFRESH_SECONDS into an in-memory cache, and request handlers
+just hand back cached bytes. This keeps the Pi's latency flat.
+
+One Strava fetch per round, not one per view: each of the 3 live views used
+to independently fetch its own data (see data_fetcher.py's docstring for the
+exact tally), which added up to ~7-8 Strava API calls per round - at the old
+240s interval, ~105/hour, over Strava's 100-requests/15min cap. Now
+data_fetcher.fetch_all() gets everything all 3 views need in one coordinated
+pass (4-5 calls) and the views just render from that; they never touch
+strava_client themselves.
 """
 import asyncio
 import io
@@ -16,7 +23,7 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
@@ -24,6 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import aggregator
 import config as config_store  # aliased: `config` is the upload field name below
+import data_fetcher
 import error_messages
 import strava_client
 from views import render_dashboard, render_error, render_overview, render_weekly
@@ -37,9 +45,23 @@ log = logging.getLogger("app")
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
-# Seconds between background render rounds. The Pi polls every 5 min per view,
-# so 4 min guarantees it never sees the same bytes twice for a live view.
-REFRESH_INTERVAL = 240
+# Seconds between background render rounds. Display rotates every 5 min
+# between 3 views = 15 min for a full cycle, and Strava activities don't
+# change minute to minute, so there's no benefit to refreshing faster than
+# that - and every round costs ~4-5 Strava API calls (see data_fetcher.py),
+# so 900s keeps us at ~20/hour, well clear of Strava's 100/15min cap even
+# with room for manual /admin/cache checks or a bootstrap-triggered refresh.
+CACHE_REFRESH_SECONDS = 900
+
+# Give the container's network/DNS a moment to settle and avoid a thundering
+# herd of simultaneous first-fetches if Docker restarts multiple containers
+# at once during a deploy.
+STARTUP_DELAY_SECONDS = 10
+
+# A failed render round keeps serving the last good PNG (stale beats an error
+# screen) UNLESS it's this old - at that point stale stops being useful and
+# the error screen is more honest than silently-ancient data.
+STALE_THRESHOLD_SECONDS = 3600
 
 ADMIN_TOKEN_VAR = "STRAVA_ADMIN_TOKEN"
 
@@ -108,39 +130,32 @@ def _render_error_for_exception(exc: Exception) -> Image.Image:
     )
 
 
-def _render_weekly() -> bytes:
-    client = strava_client.StravaClient()
-    six_weeks_ago = datetime.now() - timedelta(weeks=6)
-    activities = client.activities_since(int(six_weeks_ago.timestamp()), per_page=100)
-    overview = aggregator.build_weekly(activities)
-    athlete = client.athlete()
-    name = f"{athlete['firstname']} {athlete['lastname']}"
-    return _to_png(render_weekly(overview, name, datetime.now()))
+def _athlete_name(shared: data_fetcher.SharedData) -> str:
+    return f"{shared.athlete['firstname']} {shared.athlete['lastname']}"
 
 
-def _render_overview() -> bytes:
-    client = strava_client.StravaClient()
-    year_start = int(datetime(datetime.now().year, 1, 1).timestamp())
-    activities = client.activities_since(year_start, per_page=100)
-    if not activities:
+def _render_weekly(shared: data_fetcher.SharedData) -> bytes:
+    # build_weekly self-windows to the last 6 ISO weeks and ignores anything
+    # outside that; passing the full YTD list is fine (see data_fetcher.py's
+    # docstring for the January-boundary caveat this implies).
+    overview = aggregator.build_weekly(shared.ytd_activities)
+    return _to_png(render_weekly(overview, _athlete_name(shared), shared.fetched_at))
+
+
+def _render_overview(shared: data_fetcher.SharedData) -> bytes:
+    if not shared.ytd_activities:
         raise ValueError("no_activities")
-    overview = aggregator.build_overview(activities)
-    athlete = client.athlete()
-    name = f"{athlete['firstname']} {athlete['lastname']}"
-    return _to_png(render_overview(overview, name, datetime.now()))
+    overview = aggregator.build_overview(shared.ytd_activities)
+    return _to_png(render_overview(overview, _athlete_name(shared), shared.fetched_at))
 
 
-def _render_activity() -> bytes:
-    client = strava_client.StravaClient()
-    activities = client.activities(per_page=1)
-    if not activities:
+def _render_activity(shared: data_fetcher.SharedData) -> bytes:
+    if shared.latest_activity_detail is None:
         raise ValueError("no_activities")
-    activity_id = activities[0]["id"]
-    activity = client.activity(activity_id)
-    streams = client.activity_streams(activity_id)
-    athlete = client.athlete()
-    name = f"{athlete['firstname']} {athlete['lastname']}"
-    return _to_png(render_dashboard(activity, streams, name, datetime.now()))
+    return _to_png(render_dashboard(
+        shared.latest_activity_detail, shared.latest_streams,
+        _athlete_name(shared), shared.fetched_at,
+    ))
 
 
 def _render_error_view(category: str) -> bytes:
@@ -169,27 +184,45 @@ async def _store(key: str, png: bytes) -> None:
         _cache[key] = CacheEntry(png=png, generated_at=datetime.now(timezone.utc))
 
 
-async def _refresh_one(key: str) -> None:
-    """Re-render one view. On failure keep whatever is already cached.
+async def _fetch_shared_data() -> data_fetcher.SharedData:
+    """The one Strava fetch each refresh round makes, shared by all 3 views."""
+    client = strava_client.StravaClient()
+    return await asyncio.to_thread(data_fetcher.fetch_all, client)
+
+
+async def _refresh_one(
+    key: str,
+    shared: data_fetcher.SharedData | None,
+    fetch_exc: Exception | None,
+) -> None:
+    """Re-render one view from this round's shared data. On failure keep
+    whatever is already cached.
 
     A stale panel beats an error panel, so a failed render never overwrites a
-    good entry. The one exception is a cold cache: with nothing to fall back
-    on, the error screen is more useful than an indefinite "loading" placeholder.
+    good entry - UNLESS the cache is cold (nothing to fall back on) or the
+    cached entry is truly stale (>1h old, e.g. after a 429 backoff swallowed
+    several rounds in a row): then the error screen is more honest than
+    silently serving ancient data forever.
     """
-    render = _RENDERERS[key]
     try:
-        png = await asyncio.to_thread(render)
+        if shared is None:
+            raise fetch_exc
+        render = _RENDERERS[key]
+        png = await asyncio.to_thread(render, shared)
         await _store(key, png)
         log.info("Rendered %s (%d bytes)", key, len(png))
     except Exception as exc:
         cached = _cache.get(key)
-        age = "none" if cached is None else f"{_age_seconds(cached):.0f}s old"
+        age = None if cached is None else _age_seconds(cached)
         log.warning("Render failed for %s (%s: %s), serving cached: %s",
-                    key, type(exc).__name__, exc, age)
-        if cached is None or _is_placeholder(key):
+                    key, type(exc).__name__, exc,
+                    "none" if age is None else f"{age:.0f}s old")
+        stale = age is not None and age > STALE_THRESHOLD_SECONDS
+        if cached is None or _is_placeholder(key) or stale:
             png = await asyncio.to_thread(lambda: _to_png(_render_error_for_exception(exc)))
             await _store(key, png)
-            log.warning("Cold cache for %s, stored error screen instead", key)
+            reason = "Stale cache (>1h)" if stale else "Cold cache"
+            log.warning("%s for %s, stored error screen instead", reason, key)
 
 
 _placeholder_keys: set[str] = set()
@@ -204,9 +237,22 @@ def _age_seconds(entry: CacheEntry) -> float:
 
 
 async def refresh_all() -> None:
-    """One full render round: live views plus every error category."""
+    """One full render round: a single shared Strava fetch, then all 3 live
+    views rendered from it, plus every error category."""
+    try:
+        shared = await _fetch_shared_data()
+        fetch_exc = None
+        log.info("Shared fetch OK: %d YTD activities, latest=%r",
+                 len(shared.ytd_activities),
+                 shared.latest_activity_detail and shared.latest_activity_detail.get("name"))
+    except Exception as exc:
+        shared = None
+        fetch_exc = exc
+        log.warning("Shared Strava fetch failed (%s: %s), views fall back to cache",
+                    type(exc).__name__, exc)
+
     for key in LIVE_VIEWS:
-        await _refresh_one(key)
+        await _refresh_one(key, shared, fetch_exc)
         _placeholder_keys.discard(key)
 
     for category in ERROR_CATEGORIES:
@@ -219,6 +265,7 @@ async def refresh_all() -> None:
 
 
 async def _refresh_loop() -> None:
+    await asyncio.sleep(STARTUP_DELAY_SECONDS)
     while True:
         try:
             await refresh_all()
@@ -226,7 +273,7 @@ async def _refresh_loop() -> None:
             raise
         except Exception:
             log.exception("Refresh round failed entirely")
-        await asyncio.sleep(REFRESH_INTERVAL)
+        await asyncio.sleep(CACHE_REFRESH_SECONDS)
 
 
 # =========================
@@ -249,7 +296,7 @@ async def lifespan(app: FastAPI):
     for key in LIVE_VIEWS:
         _cache[key] = CacheEntry(png=loading, generated_at=datetime.now(timezone.utc))
         _placeholder_keys.add(key)
-    log.info("Seeded loading placeholders, starting refresh loop (every %ds)", REFRESH_INTERVAL)
+    log.info("Seeded loading placeholders, starting refresh loop (every %ds)", CACHE_REFRESH_SECONDS)
 
     task = asyncio.create_task(_refresh_loop())
     try:

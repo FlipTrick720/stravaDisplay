@@ -381,16 +381,18 @@ if __name__ == "__main__":
     print(f"Total activities fetched: {len(activities)}")
     print(f"\nTop 2 recent categories:")
     for stats in overview.categories:
+        ride_word = "ride" if stats.count == 1 else "rides"
         print(f"  {stats.category:10s} "
-              f"{stats.count:3d} rides, "
+              f"{stats.count:3d} {ride_word}, "
               f"{stats.distance_m/1000:6.1f} km, "
               f"{int(stats.elevation_m):5d} hm, "
               f"{stats.moving_time_s/3600:5.1f} h "
               f"({len(stats.polylines)}/{stats.total_polylines} polylines shown, "
               f"{stats.shown_date_start}..{stats.shown_date_end})")
     print(f"\nLast activity: {overview.last_activity['name']}")
+    activity_word = "activity" if overview.year_total_activities == 1 else "activities"
     print(f"\nYear total: {overview.year_total_distance_m/1000:.1f} km, "
           f"{int(overview.year_total_elevation_m)} hm, "
           f"{overview.year_total_time_s/3600:.1f} h, "
-          f"{overview.year_total_activities} activities "
+          f"{overview.year_total_activities} {activity_word} "
           f"since {overview.date_range_start_of_year}")

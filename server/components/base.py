@@ -232,6 +232,11 @@ def format_number(value: float, decimals: int = 0) -> str:
     return text.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
 
 
+def pluralize(count: int, singular: str, plural: str) -> str:
+    """'1 AKTIVITÄT' vs '2 AKTIVITÄTEN' - count prefix plus the right noun form."""
+    return f"{count} {singular if count == 1 else plural}"
+
+
 # =========================
 # Smoke-test helpers
 # =========================

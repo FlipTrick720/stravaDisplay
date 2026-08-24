@@ -26,6 +26,7 @@ if __package__ in (None, ""):  # `python3 views/weekly.py` direct execution
 from components.bar_chart import BarData, render_bar_chart
 from components.base import (
     BLACK, WHITE, draw_tracked, draw_tracked_right, font, format_number,
+    pluralize,
 )
 from components.header import render_header
 from components.stat_block import render_stat_block
@@ -102,14 +103,27 @@ def _render_sidebar(
          _pct_delta(current.distance_m, overview.avg_distance_m)),
         ("HÖHE", format_number(current.elevation_m), "hm",
          _pct_delta(current.elevation_m, overview.avg_elevation_m)),
-        ("Ø PULS", format_number(current.avg_heartrate_bpm) if current.avg_heartrate_bpm else "--",
-         "bpm" if current.avg_heartrate_bpm else None,
-         _bpm_delta(current.avg_heartrate_bpm, overview.avg_heartrate_bpm)),
     ]
+    # Hide Ø PULS entirely rather than show "--" when there's no HR data
+    # anywhere in the 6-week window (current week AND the historical avg both
+    # None). If only the current week lacks it but earlier weeks have data,
+    # still show the block - "--" plus no delta (nothing to compare against).
+    show_hr = current.avg_heartrate_bpm is not None or overview.avg_heartrate_bpm is not None
+    if show_hr:
+        stats.append((
+            "Ø PULS",
+            format_number(current.avg_heartrate_bpm) if current.avg_heartrate_bpm else "--",
+            "bpm" if current.avg_heartrate_bpm else None,
+            _bpm_delta(current.avg_heartrate_bpm, overview.avg_heartrate_bpm),
+        ))
 
     stats_top = kw_box[3] + 16
-    stats_bottom = y1 - 56  # leave room for date range + activity count below
-    block_h = (stats_bottom - stats_top) / SIDEBAR_BLOCK_COUNT
+    # Block height is always relative to the full 3-slot layout, not however
+    # many stats are actually shown - so hiding Ø PULS doesn't stretch DISTANZ
+    # and HÖHE, it just frees up the last slot and the section below moves up
+    # into it (reflow), rather than the remaining blocks growing to fill it.
+    full_stats_bottom = y1 - 56  # leave room for date range + activity count below
+    block_h = (full_stats_bottom - stats_top) / SIDEBAR_BLOCK_COUNT
 
     for i, (label, value, unit, delta) in enumerate(stats):
         block_y0 = stats_top + i * block_h
@@ -119,8 +133,10 @@ def _render_sidebar(
             rule_y = block_y1 + SIDEBAR_STAT_GAP / 2
             draw.line([(x0, rule_y), (x1, rule_y)], fill=BLACK, width=1)
 
-    # --- date range + activity count, below the stats ---
-    rule_y = stats_bottom
+    # --- date range + activity count, below the stats (moves up when Ø PULS
+    # is hidden, since it's positioned right after however many blocks were
+    # actually drawn rather than the fixed 3-block bottom) ---
+    rule_y = stats_top + len(stats) * block_h
     draw.line([(x0, rule_y), (x1, rule_y)], fill=BLACK, width=1)
 
     small = font(9)
@@ -132,7 +148,8 @@ def _render_sidebar(
     today = datetime.now().date()
     days_elapsed = min(7, max(0, (today - current.start_date).days + 1))
     days_open = max(0, 7 - days_elapsed)
-    count_text = f"{current.activity_count} AKTIVITÄTEN · {days_open} TAGE OFFEN"
+    count_text = (f"{pluralize(current.activity_count, 'AKTIVITÄT', 'AKTIVITÄTEN')} · "
+                  f"{pluralize(days_open, 'TAG', 'TAGE')} OFFEN")
     draw_tracked(draw, (x0, rule_y + 24 - cap_top), count_text, small, BLACK, 1.0)
 
 
@@ -153,7 +170,7 @@ def _render_footer(
     summary = (
         f"{format_number(overview.total_distance_m / 1000)} KM · "
         f"{format_number(overview.total_elevation_m)} HM · "
-        f"{overview.total_activities} AKTIVITÄTEN"
+        f"{pluralize(overview.total_activities, 'AKTIVITÄT', 'AKTIVITÄTEN')}"
     )
     draw_tracked_right(draw, (x1, text_y), summary, small, BLACK, 1.5)
 

@@ -32,6 +32,7 @@ if __package__ in (None, ""):  # `python3 views/overview.py` direct execution
 from components.badge import render_badge
 from components.base import (
     BLACK, WHITE, draw_tracked, draw_tracked_right, font, format_number,
+    pluralize,
 )
 from components.header import render_header
 from components.map_view import render_map
@@ -88,6 +89,13 @@ def _time_ago_days(iso: str) -> str:
     return f"VOR {days} TAGEN"
 
 
+def _tracks_label(shown: int, total: int) -> str:
+    """'3 / 62 TRACKS' vs '1 / 1 TRACK' - noun follows the total, since that's
+    the real count of tracks that exist (shown is always <= total)."""
+    noun = "TRACK" if total == 1 else "TRACKS"
+    return f"{shown} / {total} {noun}"
+
+
 def _panel_box(index: int) -> tuple[int, int, int, int]:
     if index == 0:
         return (MARGIN_LEFT, HEADER_HEIGHT, DIVIDER_X - PANEL_GAP, BOTTOM_ROW_Y0)
@@ -104,7 +112,7 @@ def _render_panel(draw: ImageDraw.ImageDraw, img: Image.Image,
 
     tracks_font = font(TRACKS_LABEL_SIZE)
     draw_tracked_right(
-        draw, (x1, row_mid), f"{len(stats.polylines)} / {stats.total_polylines} TRACKS",
+        draw, (x1, row_mid), _tracks_label(len(stats.polylines), stats.total_polylines),
         tracks_font, BLACK, TRACKS_LABEL_TRACKING, anchor="lm",
     )
 
@@ -121,15 +129,16 @@ def _render_panel(draw: ImageDraw.ImageDraw, img: Image.Image,
     cap_top = karte_font.getbbox("M")[1]
     karte_y = map_y1 + GAP_ABOVE_KARTE
 
+    tracks_label = _tracks_label(len(stats.polylines), stats.total_polylines)
     if stats.shown_date_start and stats.shown_date_end:
         date_range = f"{stats.shown_date_start:%d.%m.}-{stats.shown_date_end:%d.%m.}"
         karte_text = (
-            f"KARTE · {len(stats.polylines)} / {stats.total_polylines} TRACKS · "
+            f"KARTE · {tracks_label} · "
             f"{date_range} · {format_number(stats.shown_distance_m / 1000)} KM · "
             f"{format_number(stats.shown_elevation_m)} HM"
         )
     else:
-        karte_text = f"KARTE · {len(stats.polylines)} / {stats.total_polylines} TRACKS"
+        karte_text = f"KARTE · {tracks_label}"
     draw_tracked(draw, (x0, karte_y - cap_top), karte_text, karte_font, BLACK,
                 TRACKS_LABEL_TRACKING)
 
@@ -212,7 +221,7 @@ def _render_bottom_right(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, in
     # last row of ink 1px past the 480px canvas - silently dropped by PIL,
     # not "clipped" in a visible sense, but zero margin either way).
     footer_font = font(BOTTOM_LABEL_SIZE)
-    footer = (f"{overview.year_total_activities} AKTIVITÄTEN · "
+    footer = (f"{pluralize(overview.year_total_activities, 'AKTIVITÄT', 'AKTIVITÄTEN')} · "
               f"SEIT {overview.date_range_start_of_year:%d.%m.%Y}")
     footer_bbox = footer_font.getbbox(footer)
     footer_origin_y = (y1 - BOTTOM_MARGIN) - footer_bbox[3]

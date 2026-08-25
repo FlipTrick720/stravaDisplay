@@ -93,6 +93,26 @@ def test_placeholder_cache_is_replaced_even_if_fresh():
     assert app._cache["weekly"].png != placeholder_png
 
 
+def test_good_cache_not_placeholder_is_preserved_on_failure():
+    """Regression guard for the 'Cold cache' log-message bug: a cache entry
+    that was seeded via a real successful render (never touched
+    _placeholder_keys) must survive a failed round untouched - not just by
+    age (test_fresh_cache_survives_a_failed_round already covers that), but
+    specifically because it is NOT a placeholder. Seeded here the same way a
+    real render does (_store, not a hand-placed dict entry), to make sure
+    that path in particular is exercised.
+    """
+    _reset_cache()
+    good_png = b"REAL_RENDER_PNG_BYTES"
+    asyncio.run(app._store("weekly", good_png))
+    assert not app._is_placeholder("weekly")  # sanity: not seeded as a placeholder
+
+    asyncio.run(app._refresh_one("weekly", shared=None, fetch_exc=_simulated_429()))
+
+    assert app._cache["weekly"].png == good_png, \
+        "a good, non-placeholder cache entry must survive a failed round"
+
+
 def test_successful_render_updates_cache_from_shared_data():
     """Sanity check the success path still works with the new shared-data
     signature (render(shared) instead of the old zero-arg render()).

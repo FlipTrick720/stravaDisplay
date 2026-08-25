@@ -213,16 +213,27 @@ async def _refresh_one(
         log.info("Rendered %s (%d bytes)", key, len(png))
     except Exception as exc:
         cached = _cache.get(key)
+        is_placeholder = _is_placeholder(key)
         age = None if cached is None else _age_seconds(cached)
-        log.warning("Render failed for %s (%s: %s), serving cached: %s",
-                    key, type(exc).__name__, exc,
-                    "none" if age is None else f"{age:.0f}s old")
-        stale = age is not None and age > STALE_THRESHOLD_SECONDS
-        if cached is None or _is_placeholder(key) or stale:
-            png = await asyncio.to_thread(lambda: _to_png(_render_error_for_exception(exc)))
+        is_stale = age is not None and age > STALE_THRESHOLD_SECONDS
+
+        # Keep good cached PNG (not placeholder, not stale)
+        has_good_cache = cached is not None and not is_placeholder and not is_stale
+
+        if has_good_cache:
+            log.warning("Render failed for %s (%s: %s), keeping cached PNG "
+                        "(%s old, still good)",
+                        key, type(exc).__name__, exc, f"{age:.0f}s")
+        else:
+            reason = ("Cold cache (never rendered)" if cached is None
+                      else "Seeded placeholder (never successfully rendered)" if is_placeholder
+                      else f"Stale cache (>{STALE_THRESHOLD_SECONDS}s old)")
+            log.warning("Render failed for %s (%s: %s) — %s, showing error screen",
+                        key, type(exc).__name__, exc, reason)
+            png = await asyncio.to_thread(
+                lambda: _to_png(_render_error_for_exception(exc))
+            )
             await _store(key, png)
-            reason = "Stale cache (>1h)" if stale else "Cold cache"
-            log.warning("%s for %s, stored error screen instead", reason, key)
 
 
 _placeholder_keys: set[str] = set()

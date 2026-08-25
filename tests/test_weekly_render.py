@@ -84,6 +84,62 @@ def test_weekly_current_week_count_of_one_renders_distinctly():
     assert png_0 != png_2, "count=0 render is byte-identical to count=2"
 
 
+def _weekly_overview_with_zero_week(zero_week_index: int) -> WeeklyOverview:
+    """6 weeks, all with real distance/elevation except `zero_week_index`
+    (0 = oldest, 5 = current), which has zero everything - a genuine rest/
+    illness/travel week, not just count=0 with nonzero distance like
+    _weekly_overview above. This is the exact shape that crashed
+    render_bar_chart before the MIN_BAR_HEIGHT clamp fix."""
+    monday = date(2026, 8, 17)
+    weeks = []
+    for i in range(6):
+        start = monday - timedelta(weeks=5 - i)
+        is_zero = i == zero_week_index
+        iso_year, iso_week, _ = start.isocalendar()
+        weeks.append(WeekStats(
+            iso_week=iso_week,
+            year=iso_year,
+            start_date=start,
+            end_date=start + timedelta(days=6),
+            distance_m=0 if is_zero else 50_000,
+            elevation_m=0 if is_zero else 800,
+            moving_time_s=0 if is_zero else 7200,
+            avg_heartrate_bpm=None,
+            activity_count=0 if is_zero else 3,
+            days_with_activity=0 if is_zero else 2,
+            is_current=(i == 5),
+        ))
+    return WeeklyOverview(
+        weeks=weeks,
+        current_week=weeks[-1],
+        avg_distance_m=sum(w.distance_m for w in weeks[:-1]) / 5,
+        avg_elevation_m=sum(w.elevation_m for w in weeks[:-1]) / 5,
+        avg_heartrate_bpm=None,
+        total_distance_m=sum(w.distance_m for w in weeks),
+        total_elevation_m=sum(w.elevation_m for w in weeks),
+        total_activities=sum(w.activity_count for w in weeks),
+        date_range_start=weeks[0].start_date,
+        date_range_end=weeks[-1].end_date,
+    )
+
+
+def test_weekly_view_renders_with_a_zero_activity_historical_week():
+    """Regression test for the bar_chart y1<y0 crash: a historical (not
+    current) week with zero activity used to crash the whole weekly view."""
+    overview = _weekly_overview_with_zero_week(zero_week_index=2)
+    img = render_weekly(overview, "Test Athlete", datetime(2026, 8, 23, 12, 0))
+    assert img.size == (800, 480)
+    assert img.mode == "1"
+
+
+def test_weekly_view_renders_with_zero_activity_current_week():
+    """Same crash, but for the hollow-outlined current-week bar specifically."""
+    overview = _weekly_overview_with_zero_week(zero_week_index=5)
+    img = render_weekly(overview, "Test Athlete", datetime(2026, 8, 23, 12, 0))
+    assert img.size == (800, 480)
+    assert img.mode == "1"
+
+
 if __name__ == "__main__":
     # Simple runner if pytest is not installed
     import traceback

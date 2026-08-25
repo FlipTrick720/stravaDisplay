@@ -129,9 +129,14 @@ def render_bar_chart(
     for i, bar in enumerate(bars):
         bx0 = x0 + i * (bar_w + gap)
         bx1 = bx0 + bar_w - 1
-        top = value_to_y(bar.value)
-        if bar.value > 0:
-            top = min(top, baseline - MIN_BAR_HEIGHT)
+        # Unconditional clamp (used to be `if bar.value > 0`): at value == 0,
+        # value_to_y returns exactly `baseline`, giving a degenerate
+        # [.., baseline, .., baseline - 1] rect - y1 < y0, which PIL rejects.
+        # Clamping every bar to at least MIN_BAR_HEIGHT draws a small visible
+        # tick instead of crashing, for a real (if rare) case: a week with no
+        # activity at all. Doesn't change any bar that was already taller
+        # than the minimum, zero or not.
+        top = min(value_to_y(bar.value), baseline - MIN_BAR_HEIGHT)
         rect = [bx0, top, bx1, baseline - 1]
 
         if bar.hollow:

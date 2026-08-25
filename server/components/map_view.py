@@ -1,15 +1,14 @@
-"""Track map: projected polylines, city labels, compass, scale bar, markers.
+"""Track map: projected polylines, city labels, compass, markers.
 
 No tiles. The panel is 1-bit, so raster basemaps turn to mud; context comes
-from the static city list plus a compass and a scale bar instead.
+from the static city list plus a compass instead.
 
-Projection, bounds and the scale-bar snapping are ported from renderer.py
-(_project_polyline / _compute_global_bounds / _draw_scale_bar / _draw_compass)
-so the two produce identical geometry while both exist.
+Projection and bounds are ported from renderer.py (_project_polyline /
+_compute_global_bounds / _draw_compass) so the two produce identical
+geometry while both exist.
 """
 from __future__ import annotations
 
-from math import cos, radians
 from typing import Iterable, NamedTuple, Tuple
 
 import polyline as pl
@@ -50,10 +49,7 @@ MARKER_RADIUS = 5
 
 TRACK_WIDTH = 2
 BOUNDS_PAD_RATIO = 0.15
-SCALE_SIZE = 9
 COMPASS_SIZE = 9
-
-NICE_KM = [1, 2, 5, 10, 20, 50, 100, 200, 500]
 
 
 # =========================
@@ -147,44 +143,6 @@ def draw_compass(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]) -> N
               anchor="ma")
 
 
-def draw_scale_bar(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
-    corner: str = "bottom-left",
-) -> None:
-    """I-beam scale bar snapped to a round number of km."""
-    x0, y0, x1, y1 = box
-    lat_min, lat_max, lon_min, lon_max = bounds
-
-    mid_lat = (lat_min + lat_max) / 2
-    box_w = x1 - x0
-    lon_range = lon_max - lon_min or 1e-9
-    km_per_deg_lon = 111.0 * cos(radians(mid_lat))
-    km_per_pixel = (lon_range * km_per_deg_lon) / box_w
-    if km_per_pixel <= 0:
-        return
-
-    target_km = box_w * 0.2 * km_per_pixel
-    bar_km = next((n for n in NICE_KM if n >= target_km), NICE_KM[-1])
-    bar_pixels = int(bar_km / km_per_pixel)
-    if bar_pixels < 8:
-        return
-
-    fnt = font(SCALE_SIZE)
-    bar_y = y1 - 22
-    if corner == "bottom-right":
-        bar_x = x1 - 12 - bar_pixels
-    else:
-        bar_x = x0 + 12
-
-    draw.line([(bar_x, bar_y), (bar_x + bar_pixels, bar_y)], fill=BLACK, width=1)
-    draw.line([(bar_x, bar_y - 4), (bar_x, bar_y + 4)], fill=BLACK, width=1)
-    draw.line([(bar_x + bar_pixels, bar_y - 4), (bar_x + bar_pixels, bar_y + 4)],
-              fill=BLACK, width=1)
-    draw_tracked(draw, (bar_x, bar_y + 7), f"{bar_km} KM", fnt, BLACK, 1.0)
-
-
 def draw_cities(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
@@ -270,7 +228,6 @@ def render_map(
     markers: list[MapMarker] | None = None,
     border: bool = True,
     max_cities: int = 6,
-    scale_corner: str = "bottom-left",
     track_width: int = TRACK_WIDTH,
     pad_ratio: float = BOUNDS_PAD_RATIO,
 ) -> None:
@@ -312,7 +269,6 @@ def render_map(
         draw_markers(draw, inner, bounds, markers)
 
     draw_compass(draw, inner)
-    draw_scale_bar(draw, inner, bounds, scale_corner)
 
 
 if __name__ == "__main__":
@@ -342,8 +298,7 @@ if __name__ == "__main__":
         MapMarker(47.2205, 11.2805, "START 17:04", True),
         MapMarker(47.2175, 11.2830, "ZIEL 19:52", True),
     ]
-    render_map(d, (10, 10, 480, 240), [single], markers=start_end,
-               scale_corner="bottom-right")
+    render_map(d, (10, 10, 480, 240), [single], markers=start_end)
 
     render_map(d, (492, 10, 790, 240), many, max_cities=4)
 

@@ -263,7 +263,6 @@ def render_overview(
     for i in range(min(2, len(overview.categories))):
         _render_panel(draw, img, _panel_box(i), overview.categories[i], overview.year)
 
-    draw.line([(DIVIDER_X, HEADER_HEIGHT), (DIVIDER_X, BOTTOM_ROW_Y0)], fill=BLACK, width=1)
     draw.line([(DIVIDER_X, HEADER_HEIGHT), (DIVIDER_X, HEIGHT)], fill=BLACK, width=1)
 
     draw.rectangle([0, BOTTOM_ROW_Y0, WIDTH, BOTTOM_ROW_Y0 + 1], fill=BLACK)

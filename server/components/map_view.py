@@ -157,8 +157,15 @@ def draw_cities(
         x, y = project_point(lat, lon, box, bounds)
         draw.rectangle([x - CITY_DOT, y - CITY_DOT, x + CITY_DOT, y + CITY_DOT],
                        fill=BLACK)
-        draw_tracked(draw, (x + CITY_DOT + 4, y - cap_h / 2 - cap_top),
-                     name.upper(), fnt, BLACK, CITY_LABEL_TRACKING)
+        
+        text = name.upper()
+        tw = tracked_width(draw, text, fnt, CITY_LABEL_TRACKING)
+        label_x = x + CITY_DOT + 4
+        if label_x + tw > box[2]:
+            label_x = x - CITY_DOT - 4 - tw
+            
+        draw_tracked(draw, (label_x, y - cap_h / 2 - cap_top),
+                     text, fnt, BLACK, CITY_LABEL_TRACKING)
 
 
 def draw_markers(

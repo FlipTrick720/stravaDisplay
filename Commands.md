@@ -1,6 +1,7 @@
 # ssh
 ssh malte@192.168.178.49
 ssh flip@stravadisplay
+44b0501dfeab29ea4794a3ec0b79f6eaa9c56009a8eed011a5936989cdd4010e
 
 # systemctl
 ## Status
@@ -52,29 +53,4 @@ docker compose stop
 docker compose start
 
 
-
-For: 
-WARN[0000] The "STRAVA_ADMIN_TOKEN" variable is not set. Defaulting to a blank string.
-Use:
-python3 -c "import secrets; print(secrets.token_hex(32))"
-
-
-Feature:
-
-what about a feature on the pi that remembers what was the last view was so the pi can restart from time to time without anybody noticing and continuting exactly where it left of
-
-
-# Generell
-## Keine KI Commits
-mkdir -p ~/.claude && cat << 'EOF' > ~/.claude/settings.json
-{
-  "deny": [
-    "Bash(git commit*)",
-    "Bash(git push*)",
-    "Bash(git add*)",
-    "Bash(git reset*)",
-    "Bash(git stash*)"
-  ]
-}
-EOF
 

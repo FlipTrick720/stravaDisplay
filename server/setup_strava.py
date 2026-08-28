@@ -1,4 +1,18 @@
-"""One-time Strava OAuth setup.
+"""
+## Strava API (do this on your dev machine, not the Pi)
+
+1. Register app at https://www.strava.com/settings/api
+   - Name: anything without "Strava" in it
+   - Category: Data Importer
+   - Website: `http://localhost`
+   - Callback Domain: `localhost`
+   - Any 124×124+ logo (e.g. https://picsum.photos/200)
+2. Copy `config.example.json` to `config.json`
+3. Fill in `client_id` and `client_secret`
+4. Run this scipt:
+    ```bash
+    python3 src/setup_strava.py
+    ```
 
 STILL THE ENTRY POINT for getting tokens. Run it LOCALLY (it needs a browser
 for the OAuth redirect, so it cannot run unattended in the container), then
@@ -108,10 +122,52 @@ def main():
 
     athlete = data.get("athlete", {})
     print()
+
     print("=" * 70)
     print(f"SUCCESS - logged in as {athlete.get('firstname')} {athlete.get('lastname')}")
     print("Tokens saved to config.json")
     print("=" * 70)
+
+
+    print()
+    push = input("Do you want to upload this config to your deployed server now? (y/n): ").strip().lower()
+    if push == 'y':
+        server_url = "https://strava-display.maltebraig.com"
+        
+        # Try to read token from .env automatically
+        admin_token = ""
+        try:
+            with open("../.env", "r") as env_file:
+                for line in env_file:
+                    if line.startswith("STRAVA_ADMIN_TOKEN="):
+                        admin_token = line.strip().split("=", 1)[1]
+                        break
+        except Exception:
+            pass
+            
+        if not admin_token:
+            admin_token = input("Enter STRAVA_ADMIN_TOKEN: ").strip()
+        else:
+            print(f"Found admin token in .env file!")
+        
+        print(f"Uploading config.json to {server_url}/admin/bootstrap...")
+        try:
+            with open(config.CONFIG_PATH, "rb") as f:
+                r = requests.post(
+                    f"{server_url}/admin/bootstrap",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                    files={"config": f},
+                    timeout=15
+                )
+            if r.ok:
+                print("SUCCESS - config uploaded and server refreshed!")
+            else:
+                print(f"ERROR: Server responded with {r.status_code}")
+                print(r.text)
+        except Exception as e:
+            print(f"ERROR: Failed to connect to server - {e}")
+
+
 
 
 if __name__ == "__main__":

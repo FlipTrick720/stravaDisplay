@@ -61,15 +61,16 @@ Render previews without a server:
 
 ```bash
 cd server
-python3 renderer.py                # overview
-python3 renderer.py latest         # single activity
-python3 renderer.py error network  # error screen
+python3 views/overview.py
+python3 views/activity.py
+python3 views/weekly.py
+python3 views/error.py
 ```
 
 Tests:
 
 ```bash
-python3 tests/test_aggregator.py   # or: pytest tests/
+python3 -m pytest tests/
 ```
 
 ## Strava OAuth
@@ -105,8 +106,7 @@ Full steps: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 ## Status
 
 - **Phase 1 (done, deployed)** server, endpoints, Docker Compose, Cloudflare Tunnel. Live and verified end-to-end.
-- **Done since** server-side caching with background refresh, `/admin/bootstrap` remote config upload, slim Pi client.
-- **Phase 2** weekly view, redesign existing views to the new mocks.
+- **Phase 2 (done)** Component refactor, weekly view, and redesign to match new mocks.
 
 ## Hardware
 

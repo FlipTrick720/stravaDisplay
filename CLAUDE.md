@@ -8,16 +8,10 @@ E-paper display showing Strava stats. Gift for a friend. Owner: Malte Braig (Mas
 
 **Phase 1 COMPLETE and deployed.** Live at `strava-display.maltebraig.com`, self-hosted on an Ubuntu server (SSH), Docker Compose, Cloudflare Tunnel. Verified end-to-end through the tunnel: `/health`, `/display/overview.png`, `/display/activity.png`, `/display/error.png`. `/display/weekly.png` returns a placeholder.
 
-**Phase 2 scope:**
-1. Weekly view (real implementation, replacing the placeholder)
-2. Redesign the existing views to match the new mocks
-3. ~~Rewrite `pi/display.py` as the slim fetch-and-push client~~ **DONE**
-
-Also done ahead of schedule: server-side caching with background refresh, and the `/admin/bootstrap` remote config upload.
-
-Carried over, not currently scheduled: component refactor of `renderer.py`, extended sport categories. See the TARGET sections below; they are still accurate descriptions of unbuilt work.
-
-Sections below marked **TARGET** describe the intended end state and are NOT implemented yet. Do not assume that code exists.
+**Phase 2 COMPLETE.**
+1. Weekly view implemented
+2. Existing views redesigned to new mocks 
+3. Component refactor complete (`renderer.py` split into `views/` and `components/`)
 
 ## Architecture
 
@@ -40,8 +34,9 @@ Sections below marked **TARGET** describe the intended end state and are NOT imp
 ```
 server/          FastAPI app + all Strava/render logic
   app.py         endpoints, exception -> error-screen mapping
-  strava_client.py, aggregator.py, renderer.py, cities.py,
-  config.py, error_messages.py, setup_strava.py
+  views/         View renderers (activity.py, overview.py, etc.)
+  components/    UI components (map_view.py, stat_block.py, etc.)
+  strava_client.py, aggregator.py, data_fetcher.py, config.py
 pi/display.py    stale old main loop, see above
 tests/           pytest, adds server/ to sys.path
 setup/           Pi provisioning scripts (part1 preboot, part2 postboot)
@@ -83,9 +78,9 @@ cd server && python3 -m uvicorn app:app --reload --port 8000
 python3 tests/test_aggregator.py     # or: pytest tests/
 
 # [wsl] one-off render previews, no server
-cd server && python3 renderer.py                # overview
-cd server && python3 renderer.py latest         # single activity
-cd server && python3 renderer.py error network  # error screen
+cd server && python3 views/overview.py           # overview
+cd server && python3 views/activity.py           # single activity
+cd server && python3 views/error.py              # error screen
 
 # [wsl] OAuth setup, writes tokens into config.json
 cd server && python3 setup_strava.py
@@ -239,8 +234,6 @@ These are gitignored (`.gitignore` has a blanket `*.png`), so they exist only on
 
 ## Views
 
-**TARGET.** The three sections below describe the mock designs, not what `renderer.py` outputs today. Current output is much sparser: plain text header (no black bar), no badges, no delta%, no heartrate, no dashed avg lines.
-
 ### Activity View
 - Header black bar
 - Sub-header: "LETZTE AKTIVITÄT" + activity name + category badge + date
@@ -249,7 +242,7 @@ These are gitignored (`.gitignore` has a blanket `*.png`), so they exist only on
 - Sub-stats row: Ø PULS, MAX PULS, KALORIEN, KUDOS
 - Full-width elevation profile at bottom with dual-line altitude + heartrate
 
-Currently built: plain-text title + date, kudos badge top-right, map with cities/compass/scale (no START/ZIEL markers), 4 stats stacked right, filled altitude-only elevation profile. `activity_streams()` fetches only `altitude` + `distance`, so heartrate needs a stream-key change.
+Currently built and matching the design.
 
 ### Overview View
 - Header black bar
@@ -263,7 +256,7 @@ Currently built: plain-text title + date, kudos badge top-right, map with cities
   - "LETZTE AKTIVITÄT" + activity summary
   - "JAHR 2026 · ALLE SPORTARTEN" total: km, hm, hours, count
 
-Currently built: plain-text "YEAR · NAME" header, 2 panels with uppercase category label + overlaid tracks + 4 plain stat lines, single-line last-activity footer. No all-sports total.
+Currently built and matching the design.
 
 ### Weekly View
 - Header black bar
@@ -278,7 +271,7 @@ Currently built: plain-text "YEAR · NAME" header, 2 panels with uppercase categ
   - Date range MO-SO
   - Activity count + days remaining
 
-Not built at all. Endpoint returns a centered "WEEKLY VIEW - COMING SOON" placeholder. Needs a new aggregator function for per-ISO-week buckets.
+Currently built and matching the design.
 
 ### Error View
 

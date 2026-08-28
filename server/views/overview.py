@@ -35,7 +35,7 @@ from components.base import (
     pluralize, tracked_width
 )
 from components.header import render_header
-from components.map_view import render_map
+from components.map_view import render_map, decode_polylines
 from components.stat_block import render_stat_block
 
 WIDTH, HEIGHT = 800, 480
@@ -122,7 +122,8 @@ def _render_panel(draw: ImageDraw.ImageDraw, img: Image.Image,
                 + JAHR_LINE_H + GAP_AFTER_JAHR + STAT_ROW_H)
     map_y1 = y1 - reserved
 
-    render_map(draw, (x0, map_y0, x1, map_y1), stats.polylines)
+    tracks = decode_polylines(stats.polylines)
+    render_map(draw, (x0, map_y0, x1, map_y1), tracks)
 
     # --- "KARTE · X / Y TRACKS · date range · km · hm" + rule ---
     karte_font = font(TRACKS_LABEL_SIZE)

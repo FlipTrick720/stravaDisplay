@@ -162,25 +162,36 @@ def _render_subheader(draw: ImageDraw.ImageDraw, activity: dict) -> None:
     draw.text((MARGIN_LEFT, y0 + 22), name, font=name_font, fill=BLACK)
 
 
-def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict) -> None:
+def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict, streams: dict | None) -> None:
     box = (MARGIN_LEFT, HEADER_HEIGHT + SUBHEADER_HEIGHT + 8,
            MAP_COLUMN_X1, SUBSTATS_Y0 - 6)
 
     poly = activity.get("map", {}).get("polyline") or activity.get("map", {}).get("summary_polyline")
-    markers = None
-    if poly:
-        points = pl.decode(poly)
-        if points:
-            start_local = _parse_local(activity["start_date_local"])
-            elapsed = activity.get("elapsed_time") or activity.get("moving_time", 0)
-            ziel_local = start_local + timedelta(seconds=elapsed)
-            markers = _prepare_markers(
-                points,
-                f"START {start_local:%H:%M}",
-                f"ZIEL {ziel_local:%H:%M}",
-            )
+    tracks = []
+    
+    if streams and "latlng" in streams and streams["latlng"].get("data"):
+        points = streams["latlng"]["data"]
+        pts = [(p[0], p[1]) for p in points]
+        if pts:
+            tracks.append(pts)
+    elif poly:
+        pts = pl.decode(poly)
+        if pts:
+            tracks.append(pts)
 
-    render_map(draw, box, [poly] if poly else [], markers=markers)
+    markers = None
+    if tracks:
+        points = tracks[0]
+        start_local = _parse_local(activity["start_date_local"])
+        elapsed = activity.get("elapsed_time") or activity.get("moving_time", 0)
+        ziel_local = start_local + timedelta(seconds=elapsed)
+        markers = _prepare_markers(
+            points,
+            f"START {start_local:%H:%M}",
+            f"ZIEL {ziel_local:%H:%M}",
+        )
+
+    render_map(draw, box, tracks, markers=markers)
 
 
 def _render_main_stats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
@@ -277,7 +288,7 @@ def render_dashboard(
     draw.line([(0, HEADER_HEIGHT + SUBHEADER_HEIGHT),
                (WIDTH, HEADER_HEIGHT + SUBHEADER_HEIGHT)], fill=BLACK, width=1)
 
-    _render_map_column(draw, activity)
+    _render_map_column(draw, activity, streams)
     _render_main_stats(draw, activity)
     _render_substats(draw, activity)
 
@@ -332,6 +343,7 @@ if __name__ == "__main__":
         "altitude": {"data": altitude_stream},
         "distance": {"data": distance_stream},
         "heartrate": {"data": heartrate_stream},
+        "latlng": {"data": [[47.22 + 0.06 * (i/n) + 0.01 * math.sin((i/n)*9*math.pi), 11.28 + 0.18 * (i/n) + 0.01 * math.cos((i/n)*7*math.pi)] for i in range(n)]},
     }
 
     img = render_dashboard(activity, streams, "Malte Braig", datetime(2026, 8, 16, 19, 12))

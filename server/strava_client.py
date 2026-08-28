@@ -193,7 +193,7 @@ class StravaClient:
         treat streams.get("heartrate") as optional.
         """
         if keys is None:
-            keys = ["altitude", "distance", "heartrate"]
+            keys = ["altitude", "distance", "heartrate", "latlng"]
         return self._get(
             f"/activities/{activity_id}/streams",
             params={"keys": ",".join(keys), "key_by_type": "true"},

@@ -110,7 +110,7 @@ def main():
     print()
     print("=" * 70)
     print(f"SUCCESS - logged in as {athlete.get('firstname')} {athlete.get('lastname')}")
-    print(f"Tokens saved to config.json")
+    print("Tokens saved to config.json")
     print("=" * 70)
 
 

@@ -11,12 +11,6 @@ import cities
 WIDTH, HEIGHT = 800, 480
 
 MAP_WIDTH = 500
-STATS_X = MAP_WIDTH + 20
-
-HEADER_HEIGHT = 60
-FOOTER_HEIGHT = 60
-MAP_MARGIN = 15
-
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
 
@@ -27,90 +21,6 @@ FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     return ImageFont.truetype(f"{FONT_DIR}/{name}", size)
-
-
-def _format_duration(seconds: int) -> str:
-    if seconds >= 3600:
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        return f"{h}:{m:02d} h"
-    return f"{seconds // 60} min"
-
-
-def _format_date(iso: str) -> str:
-    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    return dt.strftime("%d.%m.%Y · %H:%M")
-
-
-def _time_ago(iso: str) -> str:
-    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    now = datetime.now(dt.tzinfo)
-    delta = now - dt
-    hours = delta.total_seconds() / 3600
-    if hours < 1:
-        return f"vor {int(delta.total_seconds() / 60)} min"
-    if hours < 24:
-        return f"vor {int(hours)}h"
-    return f"vor {int(hours / 24)}d"
-
-
-def _project_polyline(
-    points: Iterable[tuple[float, float]],
-    box: tuple[int, int, int, int],
-    global_bounds: tuple[float, float, float, float] | None = None,
-) -> list[tuple[int, int]]:
-    points = list(points)
-    if not points:
-        return []
-
-    if global_bounds:
-        lat_min, lat_max, lon_min, lon_max = global_bounds
-    else:
-        lats = [p[0] for p in points]
-        lons = [p[1] for p in points]
-        lat_min, lat_max = min(lats), max(lats)
-        lon_min, lon_max = min(lons), max(lons)
-
-    lat_range = lat_max - lat_min or 1e-9
-    lon_range = lon_max - lon_min or 1e-9
-
-    x0, y0, x1, y1 = box
-    box_w = x1 - x0
-    box_h = y1 - y0
-
-    scale = min(box_w / lon_range, box_h / lat_range)
-    x_offset = x0 + (box_w - lon_range * scale) / 2
-    y_offset = y0 + (box_h - lat_range * scale) / 2
-
-    return [
-        (
-            int(x_offset + (lon - lon_min) * scale),
-            int(y_offset + (lat_max - lat) * scale),
-        )
-        for lat, lon in points
-    ]
-
-
-def _compute_global_bounds(polylines: list[str]) -> tuple[float, float, float, float] | None:
-    all_lats: list[float] = []
-    all_lons: list[float] = []
-    for poly in polylines:
-        for lat, lon in pl.decode(poly):
-            all_lats.append(lat)
-            all_lons.append(lon)
-    if not all_lats:
-        return None
-    return (min(all_lats), max(all_lats), min(all_lons), max(all_lons))
-
-
-def _project_point(
-    lat: float,
-    lon: float,
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
-) -> tuple[int, int]:
-    """Project a single (lat, lon) into the box using the given bounds."""
-    return _project_polyline([(lat, lon)], box, bounds)[0]
 
 
 def _wrap_text(text: str, max_chars: int) -> list[str]:
@@ -132,90 +42,6 @@ def _wrap_text(text: str, max_chars: int) -> list[str]:
     if current:
         lines.append(current)
     return lines
-
-
-# =========================
-# Map context: cities, compass, scale
-# =========================
-
-def _draw_cities(
-    img: Image.Image,
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
-    max_cities: int = 6,
-) -> None:
-    """Draw city labels within the given lat/lon bounds inside the box."""
-    lat_min, lat_max, lon_min, lon_max = bounds
-    in_bounds = cities.cities_in_bounds(lat_min, lat_max, lon_min, lon_max, max_cities)
-    if not in_bounds:
-        return
-
-    draw = ImageDraw.Draw(img)
-    font = _font(10)
-
-    for name, lat, lon in in_bounds:
-        x, y = _project_point(lat, lon, box, bounds)
-        # Small filled circle for the city dot
-        draw.ellipse([(x - 2, y - 2), (x + 2, y + 2)], fill=0)
-        # Label to the right, slightly offset
-        draw.text((x + 5, y - 6), name, font=font, fill=0)
-
-
-def _draw_scale_bar(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
-) -> None:
-    """Draw a small scale bar in the bottom-left of the box.
-
-    Shows a nice round number of km based on the current zoom level.
-    """
-    x0, y0, x1, y1 = box
-    lat_min, lat_max, lon_min, lon_max = bounds
-
-    # Compute km per pixel at the middle latitude
-    mid_lat = (lat_min + lat_max) / 2
-    box_w = x1 - x0
-    lon_range = lon_max - lon_min or 1e-9
-    km_per_deg_lon = 111.0 * cos(radians(mid_lat))
-    km_per_pixel = (lon_range * km_per_deg_lon) / box_w
-
-    # Pick a nice round number of km that fits in ~15-25% of panel width
-    target_pixels = box_w * 0.2
-    target_km = target_pixels * km_per_pixel
-
-    # Snap to nice value: 1, 2, 5, 10, 20, 50, 100 km
-    for nice in [1, 2, 5, 10, 20, 50, 100, 200]:
-        if nice >= target_km:
-            bar_km = nice
-            break
-    else:
-        bar_km = 200
-
-    bar_pixels = int(bar_km / km_per_pixel)
-
-    # Position: bottom-left of box, small inset
-    bar_x = x0 + 8
-    bar_y = y1 - 10
-
-    draw.line([(bar_x, bar_y), (bar_x + bar_pixels, bar_y)], fill=0, width=2)
-    # Small ticks at ends
-    draw.line([(bar_x, bar_y - 3), (bar_x, bar_y + 3)], fill=0, width=1)
-    draw.line([(bar_x + bar_pixels, bar_y - 3), (bar_x + bar_pixels, bar_y + 3)], fill=0, width=1)
-    draw.text((bar_x + bar_pixels + 4, bar_y - 8), f"{bar_km} km", font=_font(10), fill=0)
-
-
-def _draw_compass(
-    draw: ImageDraw.ImageDraw,
-    box: tuple[int, int, int, int],
-) -> None:
-    """Small N-arrow in the top-right of the box."""
-    x0, y0, x1, y1 = box
-    cx = x1 - 15
-    cy = y0 + 15
-    # Arrow: up-pointing triangle
-    draw.polygon([(cx, cy - 6), (cx - 4, cy + 4), (cx + 4, cy + 4)], fill=0)
-    draw.text((cx - 4, cy + 5), "N", font=_font(9, bold=True), fill=0)
 
 
 # =========================

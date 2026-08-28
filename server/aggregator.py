@@ -72,37 +72,6 @@ def _polyline_center(poly: str) -> tuple[float, float] | None:
     return ((min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2)
 
 
-def _filter_outlier_polylines(polylines: list[str], max_km_from_median: float = 100.0) -> list[str]:
-    """Drop polylines whose center is far from the median center.
-
-    Purpose: exclude vacation trips (e.g. one ride in Spain) that would
-    force the heatmap projection to zoom out and squash local rides.
-
-    Never returns empty - falls back to original list if filter would kill everything.
-    """
-    if len(polylines) < 3:
-        return polylines
-
-    centers = [(p, _polyline_center(p)) for p in polylines]
-    centers = [(p, c) for p, c in centers if c is not None]
-    if not centers:
-        return polylines
-
-    lats = sorted(c[0] for _, c in centers)
-    lons = sorted(c[1] for _, c in centers)
-    med_lat = lats[len(lats) // 2]
-    med_lon = lons[len(lons) // 2]
-
-    # 1 deg lat ~= 111 km. Rough enough for outlier detection.
-    max_deg = max_km_from_median / 111.0
-
-    filtered = [
-        p for p, (lat, lon) in centers
-        if abs(lat - med_lat) < max_deg and abs(lon - med_lon) < max_deg * 1.5
-    ]
-    return filtered or polylines
-
-
 def _filter_dominant_cluster(items: list, key=lambda item: item, cell_size_deg: float = 0.2) -> list:
     """Keep only items whose polyline center is in the densest 3x3 grid area.
 

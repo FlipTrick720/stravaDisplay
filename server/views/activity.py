@@ -184,7 +184,7 @@ def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict) -> None:
 
 
 def _render_main_stats(draw: ImageDraw.ImageDraw, activity: dict) -> None:
-    y0 = HEADER_HEIGHT + SUBHEADER_HEIGHT
+    y0 = HEADER_HEIGHT + SUBHEADER_HEIGHT + 8
     y1 = MAIN_CONTENT_Y1
     x0, x1 = STAT_COLUMN_X0, WIDTH - MARGIN_RIGHT
 

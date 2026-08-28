@@ -64,10 +64,6 @@ Feature:
 what about a feature on the pi that remembers what was the last view was so the pi can restart from time to time without anybody noticing and continuting exactly where it left of
 
 
-now after the architecture change we can also render new better maps. the only limitaion is the e ink screen
-
-
-
 # Generell
 ## Keine KI Commits
 mkdir -p ~/.claude && cat << 'EOF' > ~/.claude/settings.json

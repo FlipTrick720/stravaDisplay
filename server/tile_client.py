@@ -11,7 +11,7 @@ BASE_URL = "https://tile.opentopomap.org/{z}/{x}/{y}.png"
 
 def fetch_tile(z: int, x: int, y: int) -> Image.Image:
     TILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_path = TILE_CACHE_DIR / f"{z}_{x}_{y}.png"
+    cache_path = TILE_CACHE_DIR / f"opentopo_{z}_{x}_{y}.png"
 
     if cache_path.exists():
         return Image.open(cache_path).convert("RGBA")

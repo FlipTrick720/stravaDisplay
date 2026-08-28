@@ -7,7 +7,7 @@ import requests
 
 TILE_SIZE = 256
 TILE_CACHE_DIR = Path(os.environ.get("STRAVA_CONFIG_DIR", Path(__file__).resolve().parents[1] / "data")) / "tiles"
-BASE_URL = "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+BASE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 def fetch_tile(z: int, x: int, y: int) -> Image.Image:
     """Fetch a tile, returning an RGBA PIL Image. Caches to disk."""

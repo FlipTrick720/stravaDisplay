@@ -53,55 +53,7 @@ BOUNDS_PAD_RATIO = 0.15
 COMPASS_SIZE = 9
 
 
-# =========================
-# Projection
-# =========================
 
-def project_polyline(
-    points: Iterable[tuple[float, float]],
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float] | None = None,
-) -> list[tuple[int, int]]:
-    """Project (lat, lon) pairs into pixel space, aspect-preserving and centred."""
-    points = list(points)
-    if not points:
-        return []
-
-    if bounds:
-        lat_min, lat_max, lon_min, lon_max = bounds
-    else:
-        lats = [p[0] for p in points]
-        lons = [p[1] for p in points]
-        lat_min, lat_max = min(lats), max(lats)
-        lon_min, lon_max = min(lons), max(lons)
-
-    lat_range = lat_max - lat_min or 1e-9
-    lon_range = lon_max - lon_min or 1e-9
-
-    x0, y0, x1, y1 = box
-    box_w = x1 - x0
-    box_h = y1 - y0
-
-    scale = min(box_w / lon_range, box_h / lat_range)
-    x_offset = x0 + (box_w - lon_range * scale) / 2
-    y_offset = y0 + (box_h - lat_range * scale) / 2
-
-    return [
-        (
-            int(x_offset + (lon - lon_min) * scale),
-            int(y_offset + (lat_max - lat) * scale),
-        )
-        for lat, lon in points
-    ]
-
-
-def project_point(
-    lat: float,
-    lon: float,
-    box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
-) -> tuple[int, int]:
-    return project_polyline([(lat, lon)], box, bounds)[0]
 
 
 def compute_bounds(

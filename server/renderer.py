@@ -10,7 +10,7 @@ import cities
 
 WIDTH, HEIGHT = 800, 480
 
-MAP_WIDTH = 500
+
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
 

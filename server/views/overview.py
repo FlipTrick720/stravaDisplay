@@ -32,7 +32,7 @@ if __package__ in (None, ""):  # `python3 views/overview.py` direct execution
 from components.badge import render_badge
 from components.base import (
     BLACK, WHITE, draw_tracked, draw_tracked_right, font, format_number,
-    pluralize,
+    pluralize, tracked_width
 )
 from components.header import render_header
 from components.map_view import render_map
@@ -139,8 +139,17 @@ def _render_panel(draw: ImageDraw.ImageDraw, img: Image.Image,
         )
     else:
         karte_text = f"KARTE · {tracks_label}"
-    draw_tracked(draw, (x0, karte_y - cap_top), karte_text, karte_font, BLACK,
-                TRACKS_LABEL_TRACKING)
+    tracking = TRACKS_LABEL_TRACKING
+    tw = tracked_width(draw, karte_text, karte_font, tracking)
+    if tw > (x1 - x0):
+        # Scale tracking down, but not below 0
+        text_w = draw.textlength(karte_text, font=karte_font)
+        if text_w < (x1 - x0):
+            tracking = ((x1 - x0) - text_w) / max(1, len(karte_text) - 1)
+        else:
+            tracking = 0
+            
+    draw_tracked(draw, (x0, karte_y - cap_top), karte_text, karte_font, BLACK, tracking)
 
     rule_y = karte_y + KARTE_LINE_H
     draw.rectangle([x0, rule_y, x1, rule_y + RULE_HEIGHT - 1], fill=BLACK)

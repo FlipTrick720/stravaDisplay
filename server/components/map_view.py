@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import Iterable, NamedTuple, Tuple
 
 import polyline as pl
-from PIL import ImageDraw
+from PIL import ImageDraw, Image
+import tile_client
 
 try:
     from components.base import BLACK, WHITE, draw_tracked, font, tracked_width
@@ -146,7 +147,7 @@ def draw_compass(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]) -> N
 def draw_cities(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
+    project_fn,
     cities: list[Tuple[str, float, float]],
 ) -> None:
     """Filled square plus a tracked uppercase label, as in the mocks."""
@@ -154,7 +155,7 @@ def draw_cities(
     cap_top = fnt.getbbox("M")[1]
     cap_h = fnt.getbbox("M")[3] - cap_top
     for name, lat, lon in cities:
-        x, y = project_point(lat, lon, box, bounds)
+        x, y = project_fn(lat, lon)
         draw.rectangle([x - CITY_DOT, y - CITY_DOT, x + CITY_DOT, y + CITY_DOT],
                        fill=BLACK)
         
@@ -171,7 +172,7 @@ def draw_cities(
 def draw_markers(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
-    bounds: tuple[float, float, float, float],
+    project_fn,
     markers: list[MapMarker],
 ) -> None:
     """START/ZIEL style markers.
@@ -187,7 +188,7 @@ def draw_markers(
     placed: list[tuple[float, float, float, float]] = []
 
     for marker in markers:
-        x, y = project_point(marker.lat, marker.lon, box, bounds)
+        x, y = project_fn(marker.lat, marker.lon)
         if marker.is_start_end and not seen_start:
             draw.ellipse([x - MARKER_RADIUS, y - MARKER_RADIUS,
                           x + MARKER_RADIUS, y + MARKER_RADIUS], fill=BLACK)
@@ -238,12 +239,6 @@ def render_map(
     track_width: int = TRACK_WIDTH,
     pad_ratio: float = BOUNDS_PAD_RATIO,
 ) -> None:
-    """Draw tracks and map furniture into `box`.
-
-    polylines are Strava encoded summary polylines. cities_in_bounds is the
-    pre-filtered (name, lat, lon) list; pass None to look it up from cities.py
-    against the computed bounds.
-    """
     x0, y0, x1, y1 = box
     if border:
         draw.rectangle([x0, y0, x1 - 1, y1 - 1], outline=BLACK, width=1)
@@ -258,55 +253,48 @@ def render_map(
 
     if bounds is None:
         fnt = font(11)
-        draw_tracked(draw, ((x0 + x1) / 2 - 45, (y0 + y1) / 2 - 6),
-                     "KEIN GPS TRACK", fnt, BLACK, 1.0)
+        tw = tracked_width(draw, "KEINE DATEN", fnt, 1.5)
+        cap_top = fnt.getbbox("M")[1]
+        cap_h = fnt.getbbox("M")[3] - cap_top
+        cx = inner[0] + (inner[2] - inner[0]) / 2
+        cy = inner[1] + (inner[3] - inner[1]) / 2
+        draw_tracked(draw, (cx - tw / 2, cy - cap_h / 2 - cap_top),
+                     "KEINE DATEN", fnt, BLACK, 1.5)
         return
 
-    if cities_in_bounds is None:
-        cities_in_bounds = _lookup_cities(*bounds, max_cities=max_cities)
+    lat_min, lat_max, lon_min, lon_max = bounds
+    box_w = inner[2] - inner[0]
+    box_h = inner[3] - inner[1]
 
-    draw_cities(draw, inner, bounds, cities_in_bounds)
+    center_lat = (lat_min + lat_max) / 2
+    center_lon = (lon_min + lon_max) / 2
+    
+    zoom = tile_client.calculate_zoom(lat_min, lat_max, lon_min, lon_max, box_w, box_h)
+    bg_img, projector = tile_client.get_centered_map_image(center_lat, center_lon, zoom, box_w, box_h)
+    bg_1bit = bg_img.convert("1", dither=Image.FLOYDSTEINBERG)
+    draw._image.paste(bg_1bit, (inner[0], inner[1]))
+
+    def proj(lat, lon):
+        px, py = projector(lat, lon)
+        return (px + inner[0], py + inner[1])
+
+    outline_width = track_width + 4
+    for track in tracks:
+        pts = [proj(lat, lon) for lat, lon in track]
+        if len(pts) > 1:
+            draw.line(pts, fill=WHITE, width=outline_width, joint="curve")
 
     for track in tracks:
-        pixels = project_polyline(track, inner, bounds)
-        if len(pixels) >= 2:
-            draw.line(pixels, fill=BLACK, width=track_width, joint="curve")
+        pts = [proj(lat, lon) for lat, lon in track]
+        if len(pts) > 1:
+            draw.line(pts, fill=BLACK, width=track_width, joint="curve")
 
     if markers:
-        draw_markers(draw, inner, bounds, markers)
-
+        draw_markers(draw, inner, proj, markers)
+        
+    if cities_in_bounds is None:
+        cities_in_bounds = _lookup_cities(lat_min, lat_max, lon_min, lon_max, max_cities)
+    if cities_in_bounds:
+        draw_cities(draw, inner, proj, cities_in_bounds)
+        
     draw_compass(draw, inner)
-
-
-if __name__ == "__main__":
-    import math
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from components.base import demo_canvas, save_preview
-
-    def fake_track(lat0, lon0, turns, scale, n=260):
-        pts = []
-        for i in range(n):
-            t = i / n * turns * 2 * math.pi
-            pts.append((lat0 + scale * 0.5 * math.sin(t) + scale * 0.02 * i / n,
-                        lon0 + scale * 1.6 * (i / n) + scale * 0.3 * math.cos(t * 1.7)))
-        return pl.encode(pts)
-
-    # Roughly the Innsbruck bowl, so real cities land inside the bounds.
-    single = fake_track(47.22, 11.28, 1.5, 0.06)
-    many = [fake_track(47.18 + i * 0.03, 11.15 + i * 0.05, 2 + i, 0.05)
-            for i in range(5)]
-
-    img, d = demo_canvas(800, 250)
-
-    start_end = [
-        MapMarker(47.2205, 11.2805, "START 17:04", True),
-        MapMarker(47.2175, 11.2830, "ZIEL 19:52", True),
-    ]
-    render_map(d, (10, 10, 480, 240), [single], markers=start_end)
-
-    render_map(d, (492, 10, 790, 240), many, max_cities=4)
-
-    save_preview(img, "preview_map_view.png")

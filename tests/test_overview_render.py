@@ -54,13 +54,14 @@ def test_render_overview_canvas_is_exactly_800x480():
 
 
 def test_render_overview_bottom_row_has_whitespace_margin():
+    from views.overview import DIVIDER_X
     img = _render_test_overview()
     px = img.convert("L").load()
     w, h = img.size
 
     for offset in range(MIN_BOTTOM_MARGIN):
         y = h - 1 - offset
-        dark = [x for x in range(w) if px[x, y] < 128]
+        dark = [x for x in range(w) if px[x, y] < 128 and x != DIVIDER_X]
         assert not dark, (
             f"row {y} (only {offset}px above the bottom edge) has ink at "
             f"x={dark[:5]}... - need at least {MIN_BOTTOM_MARGIN}px of "

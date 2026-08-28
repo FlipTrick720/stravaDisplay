@@ -1,3 +1,7 @@
+# ssh
+ssh malte@192.168.178.49
+ssh flip@stravadisplay
+
 # systemctl
 ## Status
 sudo systemctl status strava-display
@@ -32,12 +36,49 @@ sudo systemctl restart strava-display
 ## Redeploy on Ubuntu server (after pull)
 docker compose up -d --build
 
-# Status
+## Status
 docker compose ps
+## Logs
+docker compose logs server --tail=30 --follow
+
+## Stop server (not cloudflaire tunnel)
+docker compose stop server
+## Start
+docker compose start server
+
+## Alle container stoppen
+docker compose stop
+## Starten
+docker compose start
 
 
 
 For: 
 WARN[0000] The "STRAVA_ADMIN_TOKEN" variable is not set. Defaulting to a blank string.
-
+Use:
 python3 -c "import secrets; print(secrets.token_hex(32))"
+
+
+Feature:
+
+what about a feature on the pi that remembers what was the last view was so the pi can restart from time to time without anybody noticing and continuting exactly where it left of
+
+
+now after the architecture change we can also render new better maps. the only limitaion is the e ink screen
+
+
+
+# Generell
+## Keine KI Commits
+mkdir -p ~/.claude && cat << 'EOF' > ~/.claude/settings.json
+{
+  "deny": [
+    "Bash(git commit*)",
+    "Bash(git push*)",
+    "Bash(git add*)",
+    "Bash(git reset*)",
+    "Bash(git stash*)"
+  ]
+}
+EOF
+

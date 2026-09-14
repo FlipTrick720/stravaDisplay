@@ -3,7 +3,7 @@ ssh malte@192.168.178.49
 ssh flip@stravadisplay
 44b0501dfeab29ea4794a3ec0b79f6eaa9c56009a8eed011a5936989cdd4010e
 
-## Strava API (do this on your dev machine, not the Pi)
+## Strava API
 1. Register app at https://www.strava.com/settings/api
    - Name: anything without "Strava" in it
    - Category: Data Importer
@@ -70,4 +70,10 @@ docker compose stop
 docker compose start
 
 
+
+
+
+
+## Adding Wifi
+sudo nmcli connection add type wifi con-name "HuberHemmen" ifname wlan0 ssid "HuberHemmen" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "HuberHemmenBandit"
 

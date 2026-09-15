@@ -166,7 +166,8 @@ def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict, streams: dict 
     box = (MARGIN_LEFT, HEADER_HEIGHT + SUBHEADER_HEIGHT + 8,
            MAP_COLUMN_X1, SUBSTATS_Y0 - 6)
 
-    poly = activity.get("map", {}).get("polyline") or activity.get("map", {}).get("summary_polyline")
+    activity_map = activity.get("map") or {}
+    poly = activity_map.get("polyline") or activity_map.get("summary_polyline")
     tracks = []
     
     if streams and "latlng" in streams and streams["latlng"].get("data"):

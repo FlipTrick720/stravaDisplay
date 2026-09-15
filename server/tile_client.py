@@ -20,7 +20,7 @@ def fetch_tile(z: int, x: int, y: int) -> Image.Image:
     headers = {"User-Agent": "StravaDisplay/1.0"}
     
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=(5, 8))
         resp.raise_for_status()
         img = Image.open(BytesIO(resp.content)).convert("RGBA")
         img.save(cache_path)
@@ -41,7 +41,10 @@ def get_centered_map_image(center_lat: float, center_lon: float, zoom: int, box_
     y_max = int(center_y + (box_h / 2 / TILE_SIZE))
     
     stitched = Image.new("RGBA", ((x_max - x_min + 1) * TILE_SIZE, (y_max - y_min + 1) * TILE_SIZE), (255, 255, 255, 255))
-    
+
+    n_tiles = (x_max - x_min + 1) * (y_max - y_min + 1)
+    print(f"Fetching {n_tiles} tiles at zoom {zoom}")
+
     for x in range(x_min, x_max + 1):
         for y in range(y_min, y_max + 1):
             tile = fetch_tile(zoom, x, y)

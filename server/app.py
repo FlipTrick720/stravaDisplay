@@ -65,10 +65,12 @@ STALE_THRESHOLD_SECONDS = 3600
 
 # Bounds a single view's render (tile_client's per-tile timeout is 10s, but
 # has no overall deadline - a stalled socket that never trips that timeout
-# would otherwise hang the render thread forever). Shared by all 3 views via
-# _refresh_one, not per-view, since they all funnel through the same
-# asyncio.to_thread call.
+# would otherwise hang the render thread forever). activity gets longer since
+# it's the only view that can hit a cold tile cache for a brand-new route
+# (weekly has no maps; overview's 2 category panels tend to reuse recently-
+# cached tiles). Default covers any view not listed here.
 RENDER_TIMEOUT_SECONDS = 60.0
+RENDER_TIMEOUT_OVERRIDES = {"activity": 120.0}
 
 ADMIN_TOKEN_VAR = "STRAVA_ADMIN_TOKEN"
 
@@ -215,8 +217,9 @@ async def _refresh_one(
         if shared is None:
             raise fetch_exc
         render = _RENDERERS[key]
+        timeout = RENDER_TIMEOUT_OVERRIDES.get(key, RENDER_TIMEOUT_SECONDS)
         png = await asyncio.wait_for(
-            asyncio.to_thread(render, shared), timeout=RENDER_TIMEOUT_SECONDS,
+            asyncio.to_thread(render, shared), timeout=timeout,
         )
         await _store(key, png)
         log.info("Rendered %s (%d bytes)", key, len(png))

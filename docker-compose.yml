@@ -13,6 +13,10 @@ services:
       STRAVA_CONFIG_DIR: /data
       # Guards /admin/*. The server refuses to start if this is unset.
       STRAVA_ADMIN_TOKEN: ${STRAVA_ADMIN_TOKEN}
+      # Container defaults to UTC. data_fetcher.py's fetched_at uses
+      # datetime.now().astimezone(), which needs the system tz set correctly
+      # to produce wall-clock local time for the header timestamp.
+      TZ: Europe/Vienna
     volumes:
       # Host ./data holds config.json with the Strava tokens. Token refresh
       # rewrites it roughly every 6h, so it must survive container rebuilds.

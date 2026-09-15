@@ -4,8 +4,12 @@
 FROM python:3.11-slim
 
 # renderer.py hardcodes /usr/share/fonts/truetype/dejavu/
+# tzdata provides /usr/share/zoneinfo - required for the TZ env var (set in
+# docker-compose.yml) to resolve an IANA zone like Europe/Vienna; without it
+# glibc silently falls back to UTC.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-dejavu-core \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

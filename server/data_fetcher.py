@@ -62,5 +62,5 @@ def fetch_all(client: StravaClient) -> SharedData:
         ytd_activities=ytd_activities,
         latest_activity_detail=latest_activity_detail,
         latest_streams=latest_streams,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now().astimezone(),
     )

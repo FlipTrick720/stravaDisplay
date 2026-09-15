@@ -162,6 +162,18 @@ def _render_subheader(draw: ImageDraw.ImageDraw, activity: dict) -> None:
     draw.text((MARGIN_LEFT, y0 + 22), name, font=name_font, fill=BLACK)
 
 
+MAX_TRACK_POINTS = 500
+
+
+def _downsample(seq: list, max_points: int = MAX_TRACK_POINTS) -> list:
+    """Keep every Nth item so len(seq) <= max_points. A raw GPS stream can be
+    tens of thousands of points; the map/elevation renderers only need enough
+    to look smooth at 800x480, and the full-resolution list slows drawing for
+    no visible benefit."""
+    step = max(1, len(seq) // max_points)
+    return seq[::step]
+
+
 def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict, streams: dict | None) -> None:
     box = (MARGIN_LEFT, HEADER_HEIGHT + SUBHEADER_HEIGHT + 8,
            MAP_COLUMN_X1, SUBSTATS_Y0 - 6)
@@ -173,6 +185,7 @@ def _render_map_column(draw: ImageDraw.ImageDraw, activity: dict, streams: dict 
     if streams and "latlng" in streams and streams["latlng"].get("data"):
         points = streams["latlng"]["data"]
         pts = [(p[0], p[1]) for p in points]
+        pts = _downsample(pts)
         if pts:
             tracks.append(pts)
     elif poly:
@@ -262,6 +275,14 @@ def _render_elevation_section(draw: ImageDraw.ImageDraw, streams: dict | None) -
         draw.text(((box[0] + box[2]) / 2 - 60, (box[1] + box[3]) / 2 - 8),
                   "Keine Höhendaten", font=msg_font, fill=BLACK)
         return
+
+    # Downsample altitude/distance/heartrate together (same stride) so their
+    # indices stay aligned - see _downsample's docstring for why.
+    step = max(1, len(altitude) // MAX_TRACK_POINTS)
+    altitude = altitude[::step]
+    distance = distance[::step]
+    if heartrate:
+        heartrate = heartrate[::step]
 
     render_elevation(draw, box, altitude, distance, heartrate)
 

@@ -63,6 +63,13 @@ STARTUP_DELAY_SECONDS = 10
 # the error screen is more honest than silently-ancient data.
 STALE_THRESHOLD_SECONDS = 3600
 
+# Bounds a single view's render (tile_client's per-tile timeout is 10s, but
+# has no overall deadline - a stalled socket that never trips that timeout
+# would otherwise hang the render thread forever). Shared by all 3 views via
+# _refresh_one, not per-view, since they all funnel through the same
+# asyncio.to_thread call.
+RENDER_TIMEOUT_SECONDS = 60.0
+
 ADMIN_TOKEN_VAR = "STRAVA_ADMIN_TOKEN"
 
 ERROR_CATEGORIES = ("network", "auth", "overload", "no_activities", "rate_limit", "generic")
@@ -208,7 +215,9 @@ async def _refresh_one(
         if shared is None:
             raise fetch_exc
         render = _RENDERERS[key]
-        png = await asyncio.to_thread(render, shared)
+        png = await asyncio.wait_for(
+            asyncio.to_thread(render, shared), timeout=RENDER_TIMEOUT_SECONDS,
+        )
         await _store(key, png)
         log.info("Rendered %s (%d bytes)", key, len(png))
     except Exception as exc:

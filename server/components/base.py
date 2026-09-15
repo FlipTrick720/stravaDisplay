@@ -196,6 +196,16 @@ def draw_dashed_path(
         pos = 0.0
         while pos < seg:
             span = (dash if drawing else gap) - carry
+            # carry can converge to within float epsilon of dash/gap (e.g.
+            # 3.999999999999999 vs 4), leaving span ~1e-16. Adding that to a
+            # pos of any real magnitude gets rounded away entirely (pos+span
+            # == pos), so `consumed` comes out 0 and the loop never advances
+            # - an infinite loop, not a slow one. Treat "already spent" as
+            # "spent" instead of computing a doomed-to-vanish sliver.
+            if span <= 1e-9:
+                drawing = not drawing
+                carry = 0.0
+                continue
             end = min(pos + span, seg)
             if drawing:
                 draw.line(
